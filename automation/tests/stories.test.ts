@@ -37,6 +37,15 @@ test("reconciles an existing stable PR and enforces fix limits", () => {
   assert.equal(canStartFix(reconciled!, 2), false);
 });
 
+test("keeps the correction boundary explicit across a restart", () => {
+  const state = emptyState();
+  transition(state, 8, "FIXING", { fixCycles: 3, reason: "CI failed" });
+  const restarted = state.stories["8"];
+  assert.equal(restarted.fixCycles, 3);
+  assert.equal(canStartFix(restarted, 3), false);
+  assert.equal(canStartFix(restarted, 4), true);
+});
+
 test("rejects malformed agent results", () => {
   assert.throws(() => validateDeveloperResult({ summary: "done", tests: [] }), /schema/);
   assert.throws(() => parseReviewResult({ decision: "PASS", findings: [] }), /schema/);

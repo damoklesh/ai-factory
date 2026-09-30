@@ -56,13 +56,15 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, i
   let worktree: Worktree | undefined;
   let pullRequest: PullRequest | undefined = (await client.listPullRequests(branch))[0];
   let feedback = "";
+  const previous = state.stories[String(issue.number)];
+  const firstCycle = previous?.fixCycles || 0;
   transition(state, issue.number, "IMPLEMENTING", { branch, pullRequestNumber: pullRequest?.number });
   await saveState(stateFile, state);
   await mark(client, issue, "agent:running");
   try {
     worktree = await createWorktree(root, config.baseBranch, branch);
     const codex = new CodexRunner(root, config.model);
-    for (let cycle = 0; cycle <= config.maxFixCycles; cycle += 1) {
+    for (let cycle = firstCycle; cycle <= config.maxFixCycles; cycle += 1) {
       transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined });
       await saveState(stateFile, state);
       try {
@@ -80,6 +82,8 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, i
       const validationText = validation.map((item) => `${item.passed ? "PASS" : "FAIL"} ${item.command}\n${item.output}`).join("\n");
       if (!validationsPassed(validation)) {
         feedback = `Local validation failed:\n${validationText}`;
+        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback });
+        await saveState(stateFile, state);
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         continue;
       }
@@ -90,6 +94,8 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, i
       const checks = await waitForRequiredChecks(client, commit.sha, config.requiredChecks, config.timeouts.ciMinutes * 60_000);
       if (checks.decision === "FAIL") {
         feedback = `Required CI checks failed or timed out for SHA ${commit.sha}.`;
+        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback });
+        await saveState(stateFile, state);
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
         continue;
@@ -114,6 +120,8 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, i
       }
       if (review.decision === "CHANGES_REQUESTED") {
         feedback = review.findings.join("; ") || "Reviewer requested changes";
+        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback });
+        await saveState(stateFile, state);
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
         continue;
@@ -159,7 +167,7 @@ async function runMock(maxStories: number): Promise<number> {
     if (!selected) break;
     parseStory(selected.issue);
     completed.add(selected.issue.number);
-    console.log(`MOCK PASS #${selected.issue.number} (${selected.contract.objective})`);
+    console.log(`MOCK MERGED #${selected.issue.number} (${selected.contract.objective})`);
   }
   console.log(`Mock sprint completed ${completed.size} story/stories; no GitHub, Codex, worktree, push, or merge operation was performed.`);
   return completed.size === maxStories ? 0 : 1;

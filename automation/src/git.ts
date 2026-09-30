@@ -26,8 +26,13 @@ export interface Worktree { path: string; branch: string; }
 export async function createWorktree(repoRoot: string, baseRef: string, branch: string): Promise<Worktree> {
   const path = await mkdtemp(join(tmpdir(), "ai-factory-"));
   try {
+    // A resumed story may only exist on origin. Fetch the named branch without changing
+    // the user's checkout, then prefer that exact branch over recreating from base.
+    await runProcess("git", ["fetch", "origin", branch], { cwd: repoRoot, timeoutMs: 120_000 });
     const existing = await runProcess("git", ["worktree", "add", path, branch], { cwd: repoRoot, timeoutMs: 120_000 });
     if (existing.code === 0) return { path, branch };
+    const remote = await runProcess("git", ["worktree", "add", "-b", branch, path, `origin/${branch}`], { cwd: repoRoot, timeoutMs: 120_000 });
+    if (remote.code === 0) return { path, branch };
     const result = await runProcess("git", ["worktree", "add", path, baseRef], { cwd: repoRoot, timeoutMs: 120_000 });
     if (result.code !== 0) throw new Error(`git worktree add failed: ${result.stderr.trim() || result.stdout.trim()}`);
     const branchResult = await runProcess("git", ["switch", "-c", branch], { cwd: path, timeoutMs: 120_000 });
