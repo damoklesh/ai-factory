@@ -10,8 +10,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test \"dist/tests/*.test.js\"",
-    "doctor": "npm run build && node dist/doctor.js",
-    "orchestrate": "npm run build && node dist/orchestrator.js"
+    "doctor": "npm run build && node dist/src/doctor.js",
+    "orchestrate": "npm run build && node dist/src/orchestrator.js"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

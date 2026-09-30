@@ -1,11 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
 
 interface Check { name: string; ok: boolean; detail: string; }
 
 function commandCheck(command: string, args: string[]): Check {
-  const result = spawnSync(command, args, { encoding: "utf8", timeout: 10_000 });
+  const options = { encoding: "utf8" as const, timeout: 10_000, shell: process.platform === "win32" };
+  let result = spawnSync(command, args, options);
+  if (result.error && process.platform === "win32") result = spawnSync(`${command}.cmd`, args, options);
   if (result.error) return { name: command, ok: false, detail: result.error.message };
   return { name: command, ok: result.status === 0, detail: (result.stdout || result.stderr || "available").trim().split("\n")[0] };
 }
@@ -34,5 +37,4 @@ export function runDoctor(): number {
   return checks.some((check) => !check.ok && check.name !== "config" && check.name !== "github-auth") ? 1 : 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) process.exitCode = runDoctor();
-
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exitCode = runDoctor();
