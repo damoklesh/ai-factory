@@ -22,6 +22,12 @@ test("parses the issue contract and orders eligible stories", () => {
   assert.equal(selectNextStory([issue(2, 1, "#1"), issue(1, 2)], new Set([1]))?.issue.number, 2);
 });
 
+test("parses headings emitted by the GitHub issue form", () => {
+  const formIssue = issue(3, 1);
+  formIssue.body = formIssue.body.replaceAll("## ", "### ");
+  assert.equal(parseStory(formIssue).priority, 1);
+});
+
 test("blocks missing and cyclic dependencies", () => {
   assert.match(validateDependencyGraph([issue(2, 1, "#9")])[0], /missing #9/);
   assert.ok(validateDependencyGraph([issue(1, 1, "#2"), issue(2, 2, "#1")]).some((item) => item.includes("cycle")));

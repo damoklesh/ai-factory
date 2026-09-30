@@ -16,6 +16,7 @@ From `automation/`:
 npm ci
 npm run build
 npm test
+npm run coverage
 npm run doctor
 npm run orchestrate -- --dry-run
 ```
@@ -25,4 +26,3 @@ The mock mode is intentionally local and does not contact GitHub or Codex:
 ```bash
 npm run orchestrate -- --mock --max-stories 1
 ```
-

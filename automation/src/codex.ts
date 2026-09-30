@@ -1,7 +1,7 @@
 import { readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runProcess } from "./processes.js";
+import { runProcess, type ProcessResult } from "./processes.js";
 import { parseReviewResult, validateDeveloperResult } from "./result.js";
 import type { CodexExecution, ReviewResult } from "./types.js";
 
@@ -10,14 +10,14 @@ export class CodexRunError extends Error {
 }
 
 export class CodexRunner {
-  constructor(private readonly root: string, private readonly model?: string) {}
+  constructor(private readonly root: string, private readonly model?: string, private readonly processRunner: typeof runProcess = runProcess) {}
 
   private async execute(prompt: string, schema: string, outputName: string, cwd: string, timeoutMs: number): Promise<CodexExecution> {
     const outputPath = join(tmpdir(), `ai-factory-${process.pid}-${outputName}.json`);
     const args = ["exec", "--sandbox", "workspace-write", "--json", "--output-schema", join(this.root, "automation", "schemas", schema), "-o", outputPath];
     if (this.model) args.push("--model", this.model);
     args.push("-");
-    const result = await runProcess("codex", args, { cwd, input: prompt, timeoutMs });
+    const result: ProcessResult = await this.processRunner("codex", args, { cwd, input: prompt, timeoutMs });
     let parsed: unknown;
     try {
       try { parsed = JSON.parse(await readFile(outputPath, "utf8")); } catch {

@@ -33,7 +33,9 @@ export async function createWorktree(repoRoot: string, baseRef: string, branch: 
     if (existing.code === 0) return { path, branch };
     const remote = await runProcess("git", ["worktree", "add", "-b", branch, path, `origin/${branch}`], { cwd: repoRoot, timeoutMs: 120_000 });
     if (remote.code === 0) return { path, branch };
-    const result = await runProcess("git", ["worktree", "add", path, baseRef], { cwd: repoRoot, timeoutMs: 120_000 });
+    // The user's normal checkout usually has baseRef checked out already. A detached
+    // worktree avoids trying to check out the same branch twice.
+    const result = await runProcess("git", ["worktree", "add", "--detach", path, baseRef], { cwd: repoRoot, timeoutMs: 120_000 });
     if (result.code !== 0) throw new Error(`git worktree add failed: ${result.stderr.trim() || result.stdout.trim()}`);
     const branchResult = await runProcess("git", ["switch", "-c", branch], { cwd: path, timeoutMs: 120_000 });
     if (branchResult.code !== 0) throw new Error(`git switch failed: ${branchResult.stderr.trim() || branchResult.stdout.trim()}`);

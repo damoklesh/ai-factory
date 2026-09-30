@@ -21,7 +21,8 @@ function sections(body: string): Map<keyof StoryContract, string[]> {
   const result = new Map<keyof StoryContract, string[]>();
   let current: keyof StoryContract | undefined;
   for (const rawLine of body.split(/\r?\n/)) {
-    const match = rawLine.match(/^##\s+(.+?)\s*$/);
+    // GitHub issue forms emit ### headings, while the hand-written contract uses ##.
+    const match = rawLine.match(/^#{2,}\s+(.+?)\s*$/);
     if (match) {
       current = headings[match[1].trim().toLowerCase()];
       continue;
