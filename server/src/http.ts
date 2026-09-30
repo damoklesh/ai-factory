@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
-import { parseDecisionRequest, parseInstructionRequest, parseSpecUpdateRequest, parseStartRunRequest, ContractValidationError } from "@ai-factory/contracts";
+import { parseConfigUpdateRequest, parseDecisionRequest, parseInstructionRequest, parseSpecUpdateRequest, parseStartRunRequest, ContractValidationError } from "@ai-factory/contracts";
 import { LocalController } from "./controller.js";
 import { hasSession, mutationOriginAllowed, requestHostAllowed, writeSecurityHeaders, writeSessionCookie } from "./security.js";
 
@@ -43,7 +43,7 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
       if (request.method === "POST" && path === "/api/sync") return json(response, 200, { accepted: true, syncedAt: new Date().toISOString() });
       if (request.method === "POST" && path.startsWith("/api/approvals/") && path.endsWith("/decision")) { const decision = parseDecisionRequest(await body(request)); return json(response, 200, await controller.decideApproval(decodeURIComponent(path.split("/")[3]), decision)); }
       if (request.method === "PUT" && path.startsWith("/api/stories/") && path.endsWith("/spec")) return json(response, 200, await controller.updateStorySpec(decodeURIComponent(path.split("/")[3]), parseSpecUpdateRequest(await body(request))));
-      if (request.method === "PUT" && path === "/api/config") return json(response, 202, { accepted: true, message: "configuration adapter pending" });
+      if (request.method === "PUT" && path === "/api/config") return json(response, 200, await controller.updateConfig(parseConfigUpdateRequest(await body(request))));
       if (options.uiDirectory && request.method === "GET") {
         const relative = path === "/" ? "index.html" : path.replace(/^\//, "");
         const root = resolve(options.uiDirectory);

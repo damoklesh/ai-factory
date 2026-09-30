@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import type { ApprovalRequest, AppConfigView, DecisionRequest, DecisionResult, Diagnostic, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StorySummary } from "@ai-factory/contracts";
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import type { ApprovalRequest, AppConfigView, ConfigUpdateRequest, DecisionRequest, DecisionResult, Diagnostic, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StorySummary } from "@ai-factory/contracts";
 import { SCHEMA_VERSION } from "@ai-factory/contracts";
 import { AgentPersistence } from "./persistence.js";
 import { loadRepositoryStories } from "./stories.js";
@@ -18,8 +18,10 @@ export class LocalController {
   private storiesLoaded = false;
   private runHistory: RunSnapshot[] = [];
   private runsLoaded = false;
-  private readonly config: AppConfigView = { owner: "OWNER", repo: "REPO", baseBranch: "main", validationCommands: [], requiredChecks: [], maxStories: 1, maxFixCycles: 3, autoMerge: false, stateFile: ".agent/state.json" };
-  constructor(private readonly persistence = new AgentPersistence(), private readonly options: { codexAvailable?: boolean; githubConnected?: boolean; backlogRoot?: string; approvals?: ApprovalRequest[] } = {}) { this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
+  private config: AppConfigView = { owner: "OWNER", repo: "REPO", baseBranch: "main", validationCommands: [], requiredChecks: [], maxStories: 1, maxFixCycles: 3, autoMerge: false, stateFile: ".agent/state.json", developerPrompt: "Keep changes small and focused.", reviewerPrompt: "Review the current commit and report evidence." };
+  private configRevision = "local-config-v1";
+  private readonly configUpdates = new Map<string, { revision: string; config: AppConfigView; diff: string }>();
+  constructor(private readonly persistence = new AgentPersistence(), private readonly options: { codexAvailable?: boolean; githubConnected?: boolean; backlogRoot?: string; approvals?: ApprovalRequest[]; configPath?: string } = {}) { this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
 
   async project(): Promise<ProjectSnapshot> {
     await this.ensureStories();
@@ -76,7 +78,14 @@ export class LocalController {
     const root = resolve(this.options.backlogRoot || "backlog"); const path = resolve(root, `${storyId}.md`); if (path !== join(root, `${storyId}.md`)) throw new Error("PERMISSION_DENIED");
     await writeFile(path, request.markdown, "utf8"); const revision = createHash("sha256").update(request.markdown).digest("hex").slice(0, 12); this.stories = this.stories.map((item) => item.storyId === storyId ? { ...item, markdown: request.markdown, specRevision: revision, updatedAt: new Date().toISOString() } : item); return { preview: false, diff, revision };
   }
-  async configView(): Promise<AppConfigView & { revision: string }> { return { ...this.config, revision: "local-config-v1" }; }
+  async updateConfig(request: ConfigUpdateRequest): Promise<{ revision: string; config: AppConfigView; diff: string }> {
+    const previous = this.configUpdates.get(request.idempotencyKey); if (previous) return previous;
+    if (request.expectedRevision !== this.configRevision) throw new Error("VERSION_CONFLICT");
+    const next = { ...this.config, ...request.config }; const diff = unifiedDiff(JSON.stringify(this.config, null, 2), JSON.stringify(next, null, 2));
+    const path = resolve(this.options.configPath || "automation/config.json"); await mkdir(dirname(path), { recursive: true }); const temp = `${path}.${process.pid}.tmp`; await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, "utf8"); await rename(temp, path);
+    this.config = next; this.configRevision = createHash("sha256").update(JSON.stringify(next)).digest("hex").slice(0, 12); const result = { revision: this.configRevision, config: { ...this.config }, diff }; this.configUpdates.set(request.idempotencyKey, result); return result;
+  }
+  async configView(): Promise<AppConfigView & { revision: string }> { return { ...this.config, revision: this.configRevision }; }
   subscribe(listener: Listener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   async start(request: StartRunRequest): Promise<RunSnapshot> {
     await this.ensureStories();
@@ -84,7 +93,7 @@ export class LocalController {
     if (this.activeRun && ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(this.activeRun.status)) throw new Error("RUN_ALREADY_ACTIVE");
     const now = new Date().toISOString();
     const story = this.stories.find((item) => item.deliveryStatus !== "MERGED" && !item.dependencyError);
-    this.activeRun = { schemaVersion: SCHEMA_VERSION, runId: randomUUID(), storyId: story?.storyId, status: "ACTIVE", phase: "SELECTING", startedAt: now, updatedAt: now, attempts: 0, maxStories: request.maxStories, autoMerge: request.autoMerge, validationStatus: "PENDING", effectiveConfigRevision: "local-config-v1" };
+    this.activeRun = { schemaVersion: SCHEMA_VERSION, runId: randomUUID(), storyId: story?.storyId, status: "ACTIVE", phase: "SELECTING", startedAt: now, updatedAt: now, attempts: 0, maxStories: request.maxStories, autoMerge: request.autoMerge, validationStatus: "PENDING", effectiveConfigRevision: this.configRevision };
     if (story) this.stories = this.stories.map((item) => item.storyId === story.storyId ? { ...item, executionStatus: "ACTIVE", updatedAt: now } : item);
     await this.persist("run started");
     return this.activeRun;

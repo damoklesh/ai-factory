@@ -123,6 +123,9 @@ export interface AppConfigView {
   maxFixCycles: number;
   autoMerge: boolean;
   stateFile: string;
+  developerPrompt?: string;
+  reviewerPrompt?: string;
+  configRevision?: string;
 }
 
 export interface StartRunRequest { maxStories: number; autoMerge: boolean; expectedConfigRevision?: string; }
@@ -156,6 +159,18 @@ export function parseInstructionRequest(value: unknown): InstructionRequest {
 export function parseSpecUpdateRequest(value: unknown): SpecUpdateRequest {
   if (!isRecord(value) || typeof value.markdown !== "string" || value.markdown.length > 200_000 || typeof value.expectedRevision !== "string" || !value.expectedRevision || typeof value.confirm !== "boolean" || typeof value.idempotencyKey !== "string" || !value.idempotencyKey) throw new ContractValidationError("spec", "markdown, expectedRevision, confirm, and idempotencyKey are required");
   return { markdown: value.markdown, expectedRevision: value.expectedRevision, confirm: value.confirm, idempotencyKey: value.idempotencyKey };
+}
+
+export function parseConfigUpdateRequest(value: unknown): ConfigUpdateRequest {
+  if (!isRecord(value) || !isRecord(value.config) || typeof value.expectedRevision !== "string" || !value.expectedRevision || typeof value.idempotencyKey !== "string" || !value.idempotencyKey) throw new ContractValidationError("config", "config, expectedRevision, and idempotencyKey are required");
+  const config = value.config; const allowed = ["owner", "repo", "baseBranch", "model", "validationCommands", "requiredChecks", "maxStories", "maxFixCycles", "autoMerge", "stateFile", "developerPrompt", "reviewerPrompt"];
+  for (const key of Object.keys(config)) if (!allowed.includes(key) || /token|password|secret|credential|auth/i.test(key)) throw new ContractValidationError(`config.${key}`, "field is not editable");
+  if (config.maxStories !== undefined && (!Number.isInteger(config.maxStories) || Number(config.maxStories) < 1 || Number(config.maxStories) > 100)) throw new ContractValidationError("config.maxStories", "must be an integer between 1 and 100");
+  if (config.maxFixCycles !== undefined && (!Number.isInteger(config.maxFixCycles) || Number(config.maxFixCycles) < 0 || Number(config.maxFixCycles) > 20)) throw new ContractValidationError("config.maxFixCycles", "must be an integer between 0 and 20");
+  for (const key of ["validationCommands", "requiredChecks"] as const) if (config[key] !== undefined && (!Array.isArray(config[key]) || config[key].some((item) => typeof item !== "string" || item.length > 500))) throw new ContractValidationError(`config.${key}`, "must be an array of strings");
+  for (const key of ["owner", "repo", "baseBranch", "model", "stateFile", "developerPrompt", "reviewerPrompt"] as const) if (config[key] !== undefined && typeof config[key] !== "string") throw new ContractValidationError(`config.${key}`, "must be a string");
+  if (config.autoMerge !== undefined && typeof config.autoMerge !== "boolean") throw new ContractValidationError("config.autoMerge", "must be boolean");
+  return { config: config as Partial<AppConfigView>, expectedRevision: value.expectedRevision, idempotencyKey: value.idempotencyKey };
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
