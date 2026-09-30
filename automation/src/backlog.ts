@@ -34,7 +34,7 @@ export async function syncBacklog(client: GitHubClient, root: string, options: {
   const result: BacklogSyncResult = { created: [], existing: [], updated: [] };
   const linked = new Map<string, Issue>();
   for (const story of stories) {
-    const existing = issues.find((issue) => storyIssueId(issue) === story.storyId);
+    const existing = issues.find((issue) => canonicalStoryId(storyIssueId(issue) || "") === story.storyId);
     if (existing) {
       linked.set(story.storyId, existing);
       result.existing.push({ storyId: story.storyId, issueNumber: existing.number });
@@ -69,9 +69,13 @@ export function backlogPath(targetRoot: string, configuredPath: string): string 
 
 export function storyIssueId(issue: Issue): string | undefined { return issue.body.match(/AI_FACTORY_STORY_ID:\s*([^\s<]+)/i)?.[1] || issue.title.match(/^\[([^\]]+)\]/)?.[1]; }
 
+function canonicalStoryId(value: string): string {
+  return value.match(/^US-\d+/i)?.[0].toUpperCase() || value;
+}
+
 async function parseBacklogStory(fileName: string, markdown: string, root: string): Promise<BacklogStory> {
   const { frontmatter, body } = splitFrontmatter(markdown);
-  const storyId = frontmatter.storyId || basename(fileName, ".md");
+  const storyId = canonicalStoryId(frontmatter.storyId || basename(fileName, ".md"));
   if (!/^[A-Za-z0-9._-]+$/.test(storyId)) throw new Error(`invalid backlog story id: ${storyId}`);
   const title = frontmatter.title || body.match(/^#\s+(.+)$/m)?.[1]?.replace(new RegExp(`^${storyId}\\s*[—-]\\s*`, "i"), "").trim() || storyId;
   const content = normalizeContent(body, frontmatter, title);
