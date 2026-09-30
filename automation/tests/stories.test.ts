@@ -4,6 +4,8 @@ import { parseStory, selectNextStory, validateDependencyGraph } from "../src/sto
 import { emptyState, canStartFix, reconcilePullRequest, transition } from "../src/state.js";
 import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { evaluateRequiredChecks } from "../src/checks.js";
+import { buildPullRequestBody, replaceAgentLabel } from "../src/github.js";
+import { parseArgs } from "../src/orchestrator.js";
 import type { Issue } from "../src/types.js";
 
 const issue = (number: number, priority: number, dependencies = "None"): Issue => ({
@@ -42,4 +44,10 @@ test("evaluates checks only for the current head SHA", () => {
   assert.equal(evaluateRequiredChecks([{ name: "CI", status: "completed", conclusion: "success", headSha: "old" }], ["CI"], "new").decision, "WAIT");
   assert.equal(evaluateRequiredChecks([{ name: "CI", status: "completed", conclusion: "failure", headSha: "new" }], ["CI"], "new").decision, "FAIL");
   assert.equal(evaluateRequiredChecks([{ name: "CI", status: "completed", conclusion: "success", headSha: "new" }], ["CI"], "new").decision, "PASS");
+});
+
+test("uses stable issue branches and preserves non-agent labels", () => {
+  assert.deepEqual(replaceAgentLabel(["bug", "agent:ready", "agent:blocked"], "agent:running"), ["bug", "agent:running"]);
+  assert.match(buildPullRequestBody(12, "agent/issue-12"), /Issue: #12/);
+  assert.equal(parseArgs(["--max-stories", "2", "--auto-merge"]).autoMerge, true);
 });

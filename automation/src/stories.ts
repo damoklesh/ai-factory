@@ -104,7 +104,7 @@ export function selectNextStory(issues: Issue[], completed: Set<number>): StoryS
   if (graphErrors.length > 0) return undefined;
   const candidates: StorySelection[] = [];
   for (const issue of issues) {
-    if (issue.state !== "open" || !issue.labels.includes("agent:ready")) continue;
+    if (completed.has(issue.number) || issue.state !== "open" || !issue.labels.includes("agent:ready")) continue;
     try {
       const contract = parseStory(issue);
       if (contract.dependencies.every((dependency) => completed.has(dependency))) candidates.push({ issue, contract });
@@ -115,4 +115,3 @@ export function selectNextStory(issues: Issue[], completed: Set<number>): StoryS
   candidates.sort((left, right) => left.contract.priority - right.contract.priority || left.issue.number - right.issue.number);
   return candidates[0];
 }
-
