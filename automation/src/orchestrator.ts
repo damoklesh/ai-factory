@@ -193,7 +193,7 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   const target = await ensureTargetRepository(config, controlRoot, token);
   if (options.syncBacklog) {
     const result = await syncBacklog(client, backlogPath(target.path, config.targetBacklogPath));
-    console.log(`Backlog sync completed: ${result.created.length} created, ${result.existing.length} already linked.`);
+    console.log(`Backlog sync completed: ${result.created.length} created, ${result.updated.length} updated, ${result.existing.length} already linked.`);
     return 0;
   }
   const stateFile = resolve(config.stateFile);

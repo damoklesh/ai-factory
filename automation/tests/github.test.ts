@@ -16,6 +16,7 @@ test("maps GitHub REST resources and filters pull-request issues", async () => {
     if (url.includes("/pulls?state=open")) return Response.json([{ number: 9, title: "US", body: "body", state: "open", merged_at: null, head: { ref: "agent/issue-1", sha: "sha-1" }, base: { ref: "main" } }]);
     if (url.endsWith("/pulls/9")) return Response.json({ number: 9, title: "US", body: "body", state: "open", merged_at: null, head: { ref: "agent/issue-1", sha: "sha-1" }, base: { ref: "main" } });
     if (method === "POST" && url.endsWith("/issues")) return Response.json({ number: 11, title: "New issue", body: "body", state: "open", labels: [{ name: "agent:ready" }] });
+    if (method === "PATCH" && url.endsWith("/issues/1")) return Response.json({ number: 1, title: "Updated", body: "updated", state: "open", labels: [{ name: "agent:ready" }] });
     if (url.endsWith("/commits/sha-1/check-runs")) return Response.json({ check_runs: [{ name: "CI", status: "completed", conclusion: "success", head_sha: "sha-1" }] });
     if (method === "POST" && url.endsWith("/pulls")) return Response.json({ number: 10, title: "New", body: "body", state: "open", head: { ref: "agent/issue-10", sha: "sha-10" }, base: { ref: "main" } });
     if (method === "PUT" && url.endsWith("/merge")) return Response.json({ merged: true, message: "Merged" });

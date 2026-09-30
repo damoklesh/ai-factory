@@ -3,6 +3,7 @@ import type { CheckRun, Issue, PullRequest } from "./types.js";
 export interface GitHubClient {
   listIssues(): Promise<Issue[]>;
   createIssue(input: { title: string; body: string; labels: string[] }): Promise<Issue>;
+  updateIssue(number: number, input: { title: string; body: string }): Promise<Issue>;
   listPullRequests(branch: string): Promise<PullRequest[]>;
   getPullRequest(number: number): Promise<PullRequest>;
   getChecks(headSha: string): Promise<CheckRun[]>;
@@ -44,6 +45,11 @@ export class RestGitHubClient implements GitHubClient {
 
   async createIssue(input: { title: string; body: string; labels: string[] }): Promise<Issue> {
     const item = await this.request<{ number: number; title: string; body: string | null; state: "open" | "closed"; labels: Array<{ name?: string }> }>(this.path("/issues"), { method: "POST", body: JSON.stringify(input) });
+    return { number: item.number, title: item.title, body: item.body || "", state: item.state, labels: item.labels.map((label) => label.name || "") };
+  }
+
+  async updateIssue(number: number, input: { title: string; body: string }): Promise<Issue> {
+    const item = await this.request<{ number: number; title: string; body: string | null; state: "open" | "closed"; labels: Array<{ name?: string }> }>(this.path(`/issues/${number}`), { method: "PATCH", body: JSON.stringify(input) });
     return { number: item.number, title: item.title, body: item.body || "", state: item.state, labels: item.labels.map((label) => label.name || "") };
   }
 
