@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AppConfigView } from "@ai-factory/contracts";
 
 const defaults: AppConfigView = {
@@ -16,7 +17,9 @@ const defaults: AppConfigView = {
   reviewerPrompt: "Review the current commit and report evidence.",
 };
 
-export function configFilePath(configPath = process.env.AI_FACTORY_CONFIG || "automation/config.json"): string { return resolve(configPath); }
+const repositoryRoot = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
+
+export function configFilePath(configPath = process.env.AI_FACTORY_CONFIG): string { return resolve(repositoryRoot, configPath || "automation/config.json"); }
 
 export function loadAppConfig(configPath?: string): AppConfigView {
   try {
