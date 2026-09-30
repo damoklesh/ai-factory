@@ -1,5 +1,16 @@
 # AI Factory V1
 
+## AI Factory local UI
+
+The local supervision application is started from the repository root:
+
+```bash
+npm ci
+npm run dev
+```
+
+It listens on `http://127.0.0.1:3333` by default. `npm run start` uses the same production build and local controller. Opening the page only reads project state; it never starts a run. Mutations require the browser session cookie and an exact same-origin `Origin` header. GitHub and Codex diagnostics are displayed without exposing credentials.
+
 AI Factory is a local-first TypeScript automation controller for implementing small GitHub Issues with Codex CLI. It selects one eligible user story, gives an isolated worktree to a Developer Codex process, runs configured validation, opens or reuses a pull request, waits for required CI checks, asks a fresh Reviewer Codex process for a structured review, and optionally merges only when the reviewed commit SHA is still current.
 
 This repository contains the controller described by [`AI_Factory_V1_Plan.md`](AI_Factory_V1_Plan.md). It is an automation tool, not a product web application: there is no server, database, UI, or mandatory paid OpenAI API integration.

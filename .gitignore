@@ -1,4 +1,7 @@
 node_modules/
+server/dist/
+ui/dist/
+packages/contracts/dist/
 automation/dist/
 automation/coverage/
 automation/.cache/
