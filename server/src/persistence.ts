@@ -43,6 +43,7 @@ export class AgentPersistence {
     await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "events.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(sanitized)}\n`, "utf8"); });
   }
   async appendDecision(runId: string, decision: unknown): Promise<void> { await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "decisions.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(decision)}\n`, "utf8"); }); }
+  async appendInstruction(runId: string, instruction: unknown): Promise<void> { await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "instructions.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(instruction)}\n`, "utf8"); }); }
   async readEvents(runId: string): Promise<LogEntry[]> {
     try {
       const content = await readFile(join(this.root, "runs", runId, "events.jsonl"), "utf8");

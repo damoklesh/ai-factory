@@ -2,13 +2,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
-import { parseDecisionRequest, parseInstructionRequest, parseStartRunRequest, ContractValidationError } from "@ai-factory/contracts";
+import { parseDecisionRequest, parseInstructionRequest, parseSpecUpdateRequest, parseStartRunRequest, ContractValidationError } from "@ai-factory/contracts";
 import { LocalController } from "./controller.js";
 import { hasSession, mutationOriginAllowed, requestHostAllowed, writeSecurityHeaders, writeSessionCookie } from "./security.js";
 
 const json = (response: ServerResponse, status: number, value: unknown): void => { response.statusCode = status; response.setHeader("Content-Type", "application/json; charset=utf-8"); response.end(JSON.stringify(value)); };
 async function body(request: IncomingMessage): Promise<unknown> { let text = ""; for await (const chunk of request) text += chunk; return text ? JSON.parse(text) : {}; }
-function errorCode(error: unknown): { status: number; code: string; message: string } { const message = error instanceof Error ? error.message : String(error); const status = ["RUN_ALREADY_ACTIVE", "STALE_APPROVAL", "APPROVAL_ALREADY_DECIDED", "MERGE_CHECKS_NOT_PASSING", "VERSION_CONFLICT"].includes(message) ? 409 : ["RUN_NOT_FOUND", "APPROVAL_NOT_FOUND"].includes(message) ? 404 : 400; return { status, code: message, message }; }
+function errorCode(error: unknown): { status: number; code: string; message: string } { const message = error instanceof Error ? error.message : String(error); const status = ["RUN_ALREADY_ACTIVE", "STALE_APPROVAL", "APPROVAL_ALREADY_DECIDED", "MERGE_CHECKS_NOT_PASSING", "VERSION_CONFLICT", "RUN_CONTEXT_CHANGED", "SPEC_EDIT_REQUIRES_PAUSE"].includes(message) ? 409 : ["RUN_NOT_FOUND", "APPROVAL_NOT_FOUND", "STORY_NOT_FOUND"].includes(message) ? 404 : 400; return { status, code: message, message }; }
 
 export function createAppServer(options: { controller?: LocalController; uiDirectory?: string; host?: string; port?: number } = {}) {
   const controller = options.controller || new LocalController();
@@ -39,10 +39,10 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
       if (request.method === "POST" && path === "/api/runs") return json(response, 201, await controller.start(parseStartRunRequest(await body(request))));
       const runAction = path.match(/^\/api\/runs\/([^/]+)\/(pause|stop|resume)$/);
       if (request.method === "POST" && runAction) return json(response, 200, await controller.control(decodeURIComponent(runAction[1]), runAction[2] as "pause" | "stop" | "resume"));
-      if (request.method === "POST" && path.startsWith("/api/runs/") && path.endsWith("/instructions")) { parseInstructionRequest(await body(request)); return json(response, 202, { accepted: true }); }
+      if (request.method === "POST" && path.startsWith("/api/runs/") && path.endsWith("/instructions")) { const instruction = parseInstructionRequest(await body(request)); return json(response, 202, await controller.addInstruction(decodeURIComponent(path.split("/")[3]), instruction)); }
       if (request.method === "POST" && path === "/api/sync") return json(response, 200, { accepted: true, syncedAt: new Date().toISOString() });
       if (request.method === "POST" && path.startsWith("/api/approvals/") && path.endsWith("/decision")) { const decision = parseDecisionRequest(await body(request)); return json(response, 200, await controller.decideApproval(decodeURIComponent(path.split("/")[3]), decision)); }
-      if (request.method === "PUT" && path.startsWith("/api/stories/") && path.endsWith("/spec")) return json(response, 202, { accepted: true, message: "specification adapter pending" });
+      if (request.method === "PUT" && path.startsWith("/api/stories/") && path.endsWith("/spec")) return json(response, 200, await controller.updateStorySpec(decodeURIComponent(path.split("/")[3]), parseSpecUpdateRequest(await body(request))));
       if (request.method === "PUT" && path === "/api/config") return json(response, 202, { accepted: true, message: "configuration adapter pending" });
       if (options.uiDirectory && request.method === "GET") {
         const relative = path === "/" ? "index.html" : path.replace(/^\//, "");

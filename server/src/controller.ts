@@ -1,5 +1,7 @@
-import { randomUUID } from "node:crypto";
-import type { ApprovalRequest, AppConfigView, DecisionRequest, DecisionResult, Diagnostic, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, StartRunRequest, StoryDetail, StorySummary } from "@ai-factory/contracts";
+import { createHash, randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import type { ApprovalRequest, AppConfigView, DecisionRequest, DecisionResult, Diagnostic, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StorySummary } from "@ai-factory/contracts";
 import { SCHEMA_VERSION } from "@ai-factory/contracts";
 import { AgentPersistence } from "./persistence.js";
 import { loadRepositoryStories } from "./stories.js";
@@ -11,6 +13,7 @@ export class LocalController {
   private activeRun?: RunSnapshot;
   private readonly approvalItems: ApprovalRequest[];
   private readonly decisions = new Map<string, DecisionResult>();
+  private readonly instructions = new Map<string, InstructionResult>();
   private stories: StoryDetail[] = [];
   private storiesLoaded = false;
   private runHistory: RunSnapshot[] = [];
@@ -56,6 +59,23 @@ export class LocalController {
     const result: DecisionResult = { accepted: true, decisionId: randomUUID(), requestId, status: approval.status, message: request.decision === "APPROVE" ? (approval.type === "MERGE" ? "Approval recorded; GitHub checks and native review still apply." : "Approval recorded; the controller may continue at the next safe point.") : "Rejection recorded; the run remains blocked.", executionStatus: "PENDING" };
     this.decisions.set(request.idempotencyKey, result); await this.persistence.appendDecision(approval.runId, { schemaVersion: 1, decisionId: result.decisionId, requestId, decision: request.decision, actor: "local-user", reason: request.reason, expectedHeadSha: request.expectedHeadSha, expectedSpecRevision: request.expectedSpecRevision, createdAt: now, executionStatus: "PENDING" }); return result;
   }
+  async addInstruction(runId: string, request: InstructionRequest): Promise<InstructionResult> {
+    const previous = this.instructions.get(request.idempotencyKey); if (previous) return previous;
+    await this.ensureRuns(); const run = this.runHistory.find((item) => item.runId === runId); if (!run) throw new Error("RUN_NOT_FOUND");
+    if (run.status !== request.expectedRunStatus) throw new Error("RUN_CONTEXT_CHANGED");
+    const result: InstructionResult = { instructionId: randomUUID(), runId, storyId: run.storyId, status: "PENDING_NEXT_INVOCATION", receivedAt: new Date().toISOString() };
+    this.instructions.set(request.idempotencyKey, result); await this.persistence.appendInstruction(runId, { ...result, content: request.content, expectedRunStatus: request.expectedRunStatus }); return result;
+  }
+  async updateStorySpec(storyId: string, request: SpecUpdateRequest): Promise<{ preview: boolean; diff: string; revision?: string }> {
+    if (!/^[A-Za-z0-9._-]+$/.test(storyId)) throw new Error("PERMISSION_DENIED");
+    await this.ensureStories(); const story = this.stories.find((item) => item.storyId === storyId); if (!story) throw new Error("STORY_NOT_FOUND");
+    if (story.specRevision !== request.expectedRevision) throw new Error("VERSION_CONFLICT");
+    if (["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(story.executionStatus)) throw new Error("SPEC_EDIT_REQUIRES_PAUSE");
+    const diff = unifiedDiff(story.markdown, request.markdown);
+    if (!request.confirm) return { preview: true, diff };
+    const root = resolve(this.options.backlogRoot || "backlog"); const path = resolve(root, `${storyId}.md`); if (path !== join(root, `${storyId}.md`)) throw new Error("PERMISSION_DENIED");
+    await writeFile(path, request.markdown, "utf8"); const revision = createHash("sha256").update(request.markdown).digest("hex").slice(0, 12); this.stories = this.stories.map((item) => item.storyId === storyId ? { ...item, markdown: request.markdown, specRevision: revision, updatedAt: new Date().toISOString() } : item); return { preview: false, diff, revision };
+  }
   async configView(): Promise<AppConfigView & { revision: string }> { return { ...this.config, revision: "local-config-v1" }; }
   subscribe(listener: Listener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   async start(request: StartRunRequest): Promise<RunSnapshot> {
@@ -98,3 +118,4 @@ export class LocalController {
 function statusFor(story: StoryDetail): "pending" | "active" | "blocked" | "done" { if (story.deliveryStatus === "MERGED") return "done"; if (story.dependencyError || story.blockedReason) return "blocked"; if (["ACTIVE", "PAUSE_REQUESTED", "PAUSED", "STOP_REQUESTED"].includes(story.executionStatus)) return "active"; return "pending"; }
 function issueUrl(config: AppConfigView, issue?: number): string | undefined { return issue ? `https://github.com/${config.owner}/${config.repo}/issues/${issue}` : undefined; }
 function pullRequestUrl(config: AppConfigView, pullRequest?: number): string | undefined { return pullRequest ? `https://github.com/${config.owner}/${config.repo}/pull/${pullRequest}` : undefined; }
+function unifiedDiff(before: string, after: string): string { const left = before.split(/\r?\n/); const right = after.split(/\r?\n/); const lines = [`--- current`, `+++ proposed`]; const size = Math.max(left.length, right.length); for (let index = 0; index < size; index += 1) { if (left[index] === right[index]) lines.push(`  ${left[index] || ""}`); else { if (left[index] !== undefined) lines.push(`- ${left[index]}`); if (right[index] !== undefined) lines.push(`+ ${right[index]}`); } } return lines.join("\n"); }

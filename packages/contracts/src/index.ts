@@ -1,7 +1,7 @@
 export const SCHEMA_VERSION = 1;
 
 export type DeliveryStatus = "NOT_STARTED" | "IMPLEMENTING" | "PR_OPEN" | "MERGED";
-export type ExecutionStatus = "IDLE" | "ACTIVE" | "PAUSE_REQUESTED" | "PAUSED" | "STOP_REQUESTED" | "STOPPED" | "FINISHED" | "INTERRUPTED";
+export type ExecutionStatus = "IDLE" | "ACTIVE" | "PAUSE_REQUESTED" | "PAUSED" | "STOP_REQUESTED" | "STOPPED" | "FINISHED" | "INTERRUPTED" | "BLOCKED";
 export type ValidationStatus = "PENDING" | "PASS" | "FAIL" | "UNKNOWN" | "STALE";
 export type RunPhase = "SELECTING" | "IMPLEMENTING" | "TESTING" | "CI" | "REVIEWING" | "FIXING" | "MERGING" | "PAUSED" | "STOPPED" | "FINISHED";
 
@@ -129,6 +129,8 @@ export interface StartRunRequest { maxStories: number; autoMerge: boolean; expec
 export interface DecisionRequest { decision: "APPROVE" | "REJECT" | "DEFER"; reason?: string; expectedHeadSha?: string; expectedSpecRevision?: string; idempotencyKey: string; }
 export interface DecisionResult { accepted: boolean; decisionId?: string; requestId: string; status: ApprovalRequest["status"]; message: string; executionStatus: "PENDING" | "APPLIED" | "FAILED"; }
 export interface InstructionRequest { content: string; expectedRunStatus: ExecutionStatus; idempotencyKey: string; }
+export interface InstructionResult { instructionId: string; runId: string; storyId?: string; status: "PENDING_NEXT_INVOCATION"; receivedAt: string; appliedAt?: string; }
+export interface SpecUpdateRequest { markdown: string; expectedRevision: string; confirm: boolean; idempotencyKey: string; }
 export interface ConfigUpdateRequest { config: Partial<AppConfigView>; expectedRevision: string; idempotencyKey: string; }
 
 export class ContractValidationError extends Error {
@@ -147,8 +149,13 @@ export function parseDecisionRequest(value: unknown): DecisionRequest {
 }
 
 export function parseInstructionRequest(value: unknown): InstructionRequest {
-  if (!isRecord(value) || typeof value.content !== "string" || value.content.trim().length < 1 || value.content.length > 10_000 || typeof value.expectedRunStatus !== "string" || !["PAUSED", "STOPPED", "INTERRUPTED"].includes(value.expectedRunStatus) || typeof value.idempotencyKey !== "string") throw new ContractValidationError("instruction", "content, paused/stopped status, and idempotencyKey are required");
+  if (!isRecord(value) || typeof value.content !== "string" || value.content.trim().length < 1 || value.content.length > 10_000 || typeof value.expectedRunStatus !== "string" || !["PAUSED", "PAUSE_REQUESTED", "STOPPED", "INTERRUPTED", "BLOCKED"].includes(value.expectedRunStatus) || typeof value.idempotencyKey !== "string" || value.idempotencyKey.length < 1) throw new ContractValidationError("instruction", "content, paused/stopped/blocked status, and idempotencyKey are required");
   return { content: value.content.trim(), expectedRunStatus: value.expectedRunStatus as InstructionRequest["expectedRunStatus"], idempotencyKey: value.idempotencyKey };
+}
+
+export function parseSpecUpdateRequest(value: unknown): SpecUpdateRequest {
+  if (!isRecord(value) || typeof value.markdown !== "string" || value.markdown.length > 200_000 || typeof value.expectedRevision !== "string" || !value.expectedRevision || typeof value.confirm !== "boolean" || typeof value.idempotencyKey !== "string" || !value.idempotencyKey) throw new ContractValidationError("spec", "markdown, expectedRevision, confirm, and idempotencyKey are required");
+  return { markdown: value.markdown, expectedRevision: value.expectedRevision, confirm: value.confirm, idempotencyKey: value.idempotencyKey };
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
