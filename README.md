@@ -22,7 +22,7 @@ npm run dev     # build and serve on loopback
 npm run start   # production-style local start
 ```
 
-The GitHub adapter in this UI pass is simulated through controller options for deterministic tests. A real private-repository pilot still needs credentials configured only in the backend/runner and must validate native GitHub checks and reviews manually. `autoMerge` remains disabled by default.
+The local UI uses the same repository configuration as the automation controller. When `automation/config.json` and `AGENT_GH_TOKEN` (or the supported `GITHUB_TOKEN` fallback) are available, the backend reads GitHub Issues, Pull Requests, and check runs during sync. Credentials stay in the environment and are never returned by the UI. `autoMerge` remains disabled by default.
 
 AI Factory is a local-first TypeScript automation controller for implementing small GitHub Issues with Codex CLI. It selects one eligible user story, gives an isolated worktree to a Developer Codex process, runs configured validation, opens or reuses a pull request, waits for required CI checks, asks a fresh Reviewer Codex process for a structured review, and optionally merges only when the reviewed commit SHA is still current.
 
@@ -150,6 +150,19 @@ The fine-grained PAT should be restricted to the pilot repository and granted on
 The GitHub Actions workflow also needs repository settings that allow the selected workflow to run and permit the intended PR/Issue operations. Branch protection, required approvals, and merge rules can intentionally stop the controller; do not weaken them to force automation through.
 
 ## Running locally
+
+From the repository root, configure the repository and token before starting the UI:
+
+```powershell
+Copy-Item automation/config.example.json automation/config.json
+# Edit automation/config.json and replace OWNER/REPO with the real values.
+$env:AGENT_GH_TOKEN = "<fine-grained-token>"
+npm run dev
+```
+
+The backend automatically uses `automation/config.json`. To store the configuration elsewhere, set `AI_FACTORY_CONFIG` to its path. `AGENT_GH_TOKEN` is preferred; `GITHUB_TOKEN` is also accepted. Do not put either token in `config.json`, source code, or a committed `.env` file. After changing the repository or token, restart `npm run dev`.
+
+With GitHub configured, use `Sync GitHub` in the Summary view to refresh remote Issues, Pull Requests, and checks. Without a valid configuration/token, the UI remains usable locally and correctly reports `GitHub offline`.
 
 From `automation/`:
 

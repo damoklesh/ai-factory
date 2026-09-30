@@ -5,8 +5,10 @@ import type { ApprovalRequest, AppConfigView, ConfigUpdateRequest, DecisionReque
 import { SCHEMA_VERSION } from "@ai-factory/contracts";
 import { AgentPersistence } from "./persistence.js";
 import { loadRepositoryStories } from "./stories.js";
+import { loadAppConfig, configFilePath } from "./config.js";
 
 type Listener = (event: LogEntry) => void;
+export interface GithubSyncAdapter { observe(stories: StoryDetail[]): Promise<GithubObservation[]>; }
 
 export class LocalController {
   private readonly listeners = new Set<Listener>();
@@ -18,22 +20,23 @@ export class LocalController {
   private storiesLoaded = false;
   private runHistory: RunSnapshot[] = [];
   private runsLoaded = false;
-  private config: AppConfigView = { owner: "OWNER", repo: "REPO", baseBranch: "main", validationCommands: [], requiredChecks: [], maxStories: 1, maxFixCycles: 3, autoMerge: false, stateFile: ".agent/state.json", developerPrompt: "Keep changes small and focused.", reviewerPrompt: "Review the current commit and report evidence." };
+  private config: AppConfigView;
   private configRevision = "local-config-v1";
   private lastSyncAt?: string;
   private syncStale = true;
+  private githubConnected = false;
   private readonly configUpdates = new Map<string, { revision: string; config: AppConfigView; diff: string }>();
-  constructor(private readonly persistence = new AgentPersistence(), private readonly options: { codexAvailable?: boolean; githubConnected?: boolean; githubObservations?: GithubObservation[]; backlogRoot?: string; approvals?: ApprovalRequest[]; configPath?: string } = {}) { this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
+  constructor(private readonly persistence = new AgentPersistence(), private readonly options: { codexAvailable?: boolean; githubConnected?: boolean; githubObservations?: GithubObservation[]; githubAdapter?: GithubSyncAdapter; backlogRoot?: string; approvals?: ApprovalRequest[]; configPath?: string } = {}) { this.config = loadAppConfig(options.configPath); this.githubConnected = options.githubConnected === true || Boolean(options.githubAdapter); this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
 
   async project(): Promise<ProjectSnapshot> {
     await this.ensureStories();
     await this.ensureRuns();
     const diagnostics: Diagnostic[] = [
       { name: "controller", available: true, message: "local controller ready" },
-      { name: "github", available: this.options.githubConnected === true, message: this.options.githubConnected === true ? "adapter connected" : "No GitHub adapter configured" },
+      { name: "github", available: this.githubConnected, message: this.githubConnected ? "adapter connected" : "No GitHub adapter configured" },
       { name: "codex", available: this.options.codexAvailable !== false, message: this.options.codexAvailable === false ? "Codex executable is not available" : "available through the configured runner" },
     ];
-    const githubConnected = this.options.githubConnected === true;
+    const githubConnected = this.githubConnected;
     const codexAvailable = this.options.codexAvailable !== false;
     const live = this.activeRun && ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(this.activeRun.status) ? this.activeRun : undefined;
     return { schemaVersion: SCHEMA_VERSION, repository: { owner: this.config.owner, repo: this.config.repo, baseBranch: this.config.baseBranch }, controller: { available: true, version: "ui-v1" }, github: { connected: githubConnected, checkedAt: this.lastSyncAt, stale: this.syncStale, message: githubConnected ? undefined : "No GitHub adapter configured" }, codex: { available: codexAvailable, message: codexAvailable ? undefined : "Codex executable is not available" }, activeRunId: live?.runId, counts: { total: this.stories.length, done: this.stories.filter((story) => story.deliveryStatus === "MERGED").length, blocked: this.stories.filter((story) => Boolean(story.blockedReason)).length, active: live ? 1 : 0 }, lastSyncAt: this.lastSyncAt, diagnostics };
@@ -84,13 +87,15 @@ export class LocalController {
     const previous = this.configUpdates.get(request.idempotencyKey); if (previous) return previous;
     if (request.expectedRevision !== this.configRevision) throw new Error("VERSION_CONFLICT");
     const next = { ...this.config, ...request.config }; const diff = unifiedDiff(JSON.stringify(this.config, null, 2), JSON.stringify(next, null, 2));
-    const path = resolve(this.options.configPath || "automation/config.json"); await mkdir(dirname(path), { recursive: true }); const temp = `${path}.${process.pid}.tmp`; await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, "utf8"); await rename(temp, path);
+    const path = configFilePath(this.options.configPath); await mkdir(dirname(path), { recursive: true }); const temp = `${path}.${process.pid}.tmp`; await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, "utf8"); await rename(temp, path);
     this.config = next; this.configRevision = createHash("sha256").update(JSON.stringify(next)).digest("hex").slice(0, 12); const result = { revision: this.configRevision, config: { ...this.config }, diff }; this.configUpdates.set(request.idempotencyKey, result); return result;
   }
   async sync(): Promise<SyncResult> {
     await this.ensureStories();
-    if (this.options.githubConnected !== true) { this.syncStale = true; return { connected: false, stale: true, message: "GitHub unavailable; remote facts were not changed", changedStoryIds: [] }; }
-    const observations = this.options.githubObservations || []; const changedStoryIds: string[] = [];
+    if (!this.options.githubAdapter && this.options.githubConnected !== true) { this.githubConnected = false; this.syncStale = true; return { connected: false, stale: true, message: "GitHub unavailable; remote facts were not changed", changedStoryIds: [] }; }
+    let observations: GithubObservation[];
+    try { observations = this.options.githubAdapter ? await this.options.githubAdapter.observe(this.stories) : this.options.githubObservations || []; this.githubConnected = true; } catch (error) { this.githubConnected = false; this.syncStale = true; return { connected: false, stale: true, message: error instanceof Error ? error.message : "GitHub unavailable; remote facts were not changed", changedStoryIds: [] }; }
+    const changedStoryIds: string[] = [];
     this.stories = this.stories.map((story) => {
       const observation = observations.find((item) => item.storyId === story.storyId); if (!observation) return story;
       const changed = observation.headSha !== story.headSha || observation.state !== story.externalStatus || observation.checks === "FAIL";
