@@ -1,6 +1,8 @@
 import { appendFile, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 import { dirname, join, resolve } from "node:path";
-import type { LogEntry, RunSnapshot } from "@ai-factory/contracts";
+import type { LogEntry, LogPage, RunSnapshot } from "@ai-factory/contracts";
 
 export class PersistenceError extends Error {}
 
@@ -37,7 +39,8 @@ export class AgentPersistence {
     } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw new PersistenceError("cannot list run snapshots"); }
   }
   async appendEvent(runId: string, event: LogEntry): Promise<void> {
-    await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "events.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(event)}\n`, "utf8"); });
+    const sanitized = sanitizeLogEntry(event);
+    await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "events.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(sanitized)}\n`, "utf8"); });
   }
   async readEvents(runId: string): Promise<LogEntry[]> {
     try {
@@ -55,4 +58,26 @@ export class AgentPersistence {
       throw new PersistenceError(`cannot read events for ${runId}`);
     }
   }
+  async readEventsPage(runId: string, options: { cursor?: number; limit?: number; level?: LogEntry["level"]; source?: LogEntry["source"]; search?: string } = {}): Promise<LogPage> {
+    const entries: LogEntry[] = []; const cursor = options.cursor || 0; const limit = Math.min(Math.max(options.limit || 100, 1), 500); const search = options.search?.toLowerCase();
+    try {
+      const stream = createReadStream(join(this.root, "runs", runId, "events.jsonl"), { encoding: "utf8" });
+      const lines = createInterface({ input: stream, crlfDelay: Infinity });
+      let lastSequence = cursor; let truncated = false;
+      try {
+        for await (const line of lines) {
+          if (!line) continue;
+          let event: LogEntry;
+          try { event = JSON.parse(line) as LogEntry; } catch { truncated = true; continue; }
+          if (event.sequence <= cursor || (options.level && event.level !== options.level) || (options.source && event.source !== options.source) || (search && !event.message.toLowerCase().includes(search))) continue;
+          if (entries.length >= limit) { truncated = true; break; }
+          entries.push(sanitizeLogEntry(event)); lastSequence = event.sequence;
+        }
+      } finally { lines.close(); stream.destroy(); }
+      return { entries, nextCursor: entries.length ? lastSequence : undefined, hasMore: truncated, truncated: truncated || undefined };
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { entries: [], hasMore: false }; throw new PersistenceError(`cannot read event page for ${runId}`); }
+  }
 }
+
+export function sanitizeText(value: string): string { return value.replace(/[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;\d]{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "").replace(/(bearer\s+)[^\s]+/gi, "$1[REDACTED]").replace(/((?:token|password|secret|api[_-]?key)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]").replace(/<[^>]*>/g, ""); }
+function sanitizeLogEntry(entry: LogEntry): LogEntry { const message = sanitizeText(entry.message); const command = entry.command ? sanitizeText(entry.command) : undefined; return { ...entry, message, ...(command ? { command } : {}), redacted: entry.redacted || message !== entry.message || command !== entry.command }; }

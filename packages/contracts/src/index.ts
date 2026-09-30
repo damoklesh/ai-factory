@@ -72,6 +72,8 @@ export interface LogEntry {
   redacted?: boolean;
 }
 
+export interface LogPage { entries: LogEntry[]; nextCursor?: number; hasMore: boolean; truncated?: boolean; }
+
 export interface RunSnapshot {
   schemaVersion: number;
   runId: string;

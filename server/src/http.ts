@@ -31,7 +31,8 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
       if (request.method === "GET" && path === "/api/stories") return json(response, 200, await controller.listStories({ search: url.searchParams.get("search") || undefined, status: url.searchParams.get("status") || undefined }));
       if (request.method === "GET" && path.startsWith("/api/stories/")) { const story = await controller.story(decodeURIComponent(path.slice("/api/stories/".length))); return story ? json(response, 200, story) : json(response, 404, { code: "NOT_FOUND", message: "story not found" }); }
       if (request.method === "GET" && path === "/api/runs") return json(response, 200, await controller.runs());
-      if (request.method === "GET" && path.startsWith("/api/runs/") && path.endsWith("/logs")) return json(response, 200, await controller.logs(decodeURIComponent(path.split("/")[3])));
+      if (request.method === "GET" && path.startsWith("/api/runs/") && path.endsWith("/logs/export")) { const page = await controller.logs(decodeURIComponent(path.split("/")[3]), { limit: 500 }); response.setHeader("Content-Disposition", `attachment; filename="${decodeURIComponent(path.split("/")[3])}-logs.jsonl"`); response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8"); return response.end(page.entries.map((entry) => JSON.stringify(entry)).join("\n")); }
+      if (request.method === "GET" && path.startsWith("/api/runs/") && path.endsWith("/logs")) return json(response, 200, await controller.logs(decodeURIComponent(path.split("/")[3]), { cursor: numberParam(url.searchParams.get("cursor")), limit: numberParam(url.searchParams.get("limit")), level: enumParam(url.searchParams.get("level"), ["INFO", "WARN", "ERROR"]), source: enumParam(url.searchParams.get("source"), ["controller", "developer", "reviewer", "git", "github", "validation"]), search: url.searchParams.get("search") || undefined }));
       if (request.method === "GET" && path.startsWith("/api/runs/")) return json(response, 200, await controller.run(decodeURIComponent(path.slice("/api/runs/".length))) || { code: "NOT_FOUND", message: "run not found" });
       if (request.method === "GET" && path === "/api/approvals") return json(response, 200, await controller.approvals());
       if (request.method === "GET" && path === "/api/config") return json(response, 200, await controller.configView());
@@ -58,3 +59,5 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
 }
 
 function pathIsApi(pathname: string | undefined): boolean { return Boolean(pathname && (pathname === "/api" || pathname.startsWith("/api/"))); }
+function numberParam(value: string | null): number | undefined { if (!value) return undefined; const number = Number(value); return Number.isInteger(number) && number >= 0 ? number : undefined; }
+function enumParam<T extends string>(value: string | null, values: readonly T[]): T | undefined { return value && values.includes(value as T) ? value as T : undefined; }

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ApprovalRequest, AppConfigView, Diagnostic, LogEntry, ProjectSnapshot, RunSnapshot, StartRunRequest, StoryDetail, StorySummary } from "@ai-factory/contracts";
+import type { ApprovalRequest, AppConfigView, Diagnostic, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, StartRunRequest, StoryDetail, StorySummary } from "@ai-factory/contracts";
 import { SCHEMA_VERSION } from "@ai-factory/contracts";
 import { AgentPersistence } from "./persistence.js";
 import { loadRepositoryStories } from "./stories.js";
@@ -38,7 +38,7 @@ export class LocalController {
   async story(storyId: string): Promise<StoryDetail | undefined> { await this.ensureStories(); const story = this.stories.find((item) => item.storyId === storyId); return story ? { ...story, issueUrl: issueUrl(this.config, story.githubIssueNumber), pullRequestUrl: pullRequestUrl(this.config, story.pullRequestNumber) } : undefined; }
   async runs(): Promise<RunSnapshot[]> { await this.ensureRuns(); return this.runHistory; }
   async run(runId: string): Promise<RunSnapshot | undefined> { await this.ensureRuns(); return this.runHistory.find((run) => run.runId === runId) || this.persistence.readSnapshot(runId); }
-  async logs(runId: string): Promise<LogEntry[]> { return this.persistence.readEvents(runId); }
+  async logs(runId: string, options: { cursor?: number; limit?: number; level?: LogEntry["level"]; source?: LogEntry["source"]; search?: string } = {}): Promise<LogPage> { return this.persistence.readEventsPage(runId, options); }
   async eventsSince(cursor = 0): Promise<LogEntry[]> { await this.ensureRuns(); const events: LogEntry[] = []; for (const run of this.runHistory) events.push(...await this.persistence.readEvents(run.runId)); return events.filter((event) => event.sequence > cursor).sort((left, right) => left.timestamp.localeCompare(right.timestamp)); }
   async approvals(): Promise<ApprovalRequest[]> { return this.approvalItems; }
   async configView(): Promise<AppConfigView & { revision: string }> { return { ...this.config, revision: "local-config-v1" }; }

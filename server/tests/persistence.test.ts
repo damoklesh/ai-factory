@@ -24,3 +24,15 @@ test("rejects corruption in the middle of the event log", async () => {
   await writeFile(join(root, "runs", "run-1", "events.jsonl"), `${JSON.stringify(event(1))}\nnot-json\n${JSON.stringify(event(2))}\n`, "utf8").catch(async () => { await persistence.appendEvent("run-1", event(1)); await writeFile(join(root, "runs", "run-1", "events.jsonl"), `${JSON.stringify(event(1))}\nnot-json\n${JSON.stringify(event(2))}\n`, "utf8"); });
   await assert.rejects(() => persistence.readEvents("run-1"), PersistenceError);
 });
+
+test("redacts secrets and reads large logs page by page", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-pages-"));
+  const persistence = new AgentPersistence(root);
+  for (let sequence = 1; sequence <= 250; sequence += 1) await persistence.appendEvent("run-1", { ...event(sequence), message: sequence === 1 ? "TOKEN=abc123 <b>unsafe</b>\u001b[31m fail" : `event ${sequence}` });
+  const first = await persistence.readEventsPage("run-1", { limit: 50 });
+  assert.equal(first.entries.length, 50);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.entries[0].message, "TOKEN=[REDACTED] unsafe fail");
+  const second = await persistence.readEventsPage("run-1", { cursor: first.nextCursor, limit: 50 });
+  assert.equal(second.entries[0].sequence, 51);
+});
