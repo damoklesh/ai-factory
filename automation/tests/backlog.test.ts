@@ -63,3 +63,19 @@ Ejecutar npm test.
     assert.match(created[0].body, /## Priority\n\n1/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("translates backlog story dependencies into GitHub issue numbers", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-factory-backlog-deps-"));
+  try {
+    await writeFile(join(directory, "US-01.md"), "# First\n\n## User story\nFirst story.\n\n## Criterios de aceptación\n- First works.\n\n## Validación técnica\nRun tests.\n");
+    await writeFile(join(directory, "US-02.md"), "# Second\n\n**Dependencias:** US-01.\n\n## User story\nSecond story.\n\n## Criterios de aceptación\n- Second works.\n\n## Validación técnica\nRun tests.\n");
+    const created: Array<{ title: string; body: string; labels: string[] }> = [];
+    const client = {
+      async listIssues() { return []; },
+      async createIssue(input: { title: string; body: string; labels: string[] }) { created.push(input); return { number: created.length, ...input, state: "open" as const }; },
+      async updateIssue(number: number, input: { title: string; body: string }) { created[number - 1] = { ...created[number - 1], ...input }; return { number, ...created[number - 1], state: "open" as const }; },
+    } as unknown as GitHubClient;
+    await syncBacklog(client, directory);
+    assert.match(created[1].body, /## Dependencies\n\n#1/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

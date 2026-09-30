@@ -32,18 +32,29 @@ export async function syncBacklog(client: GitHubClient, root: string, options: {
   const stories = await loadBacklog(root);
   const issues = await client.listIssues();
   const result: BacklogSyncResult = { created: [], existing: [], updated: [] };
+  const linked = new Map<string, Issue>();
   for (const story of stories) {
     const existing = issues.find((issue) => storyIssueId(issue) === story.storyId);
     if (existing) {
-      if (!options.dryRun && existing.body.includes(`AI_FACTORY_STORY_ID: ${story.storyId}`) && existing.body !== story.body) {
-        await client.updateIssue(existing.number, { title: `[${story.storyId}] ${story.title}`, body: story.body });
-        result.updated.push({ storyId: story.storyId, issueNumber: existing.number });
-      } else result.existing.push({ storyId: story.storyId, issueNumber: existing.number });
+      linked.set(story.storyId, existing);
+      result.existing.push({ storyId: story.storyId, issueNumber: existing.number });
       continue;
     }
     if (options.dryRun) { result.created.push({ storyId: story.storyId }); continue; }
     const issue = await client.createIssue({ title: `[${story.storyId}] ${story.title}`, body: story.body, labels: ["agent:ready"] });
+    linked.set(story.storyId, issue);
     result.created.push({ storyId: story.storyId, issueNumber: issue.number });
+  }
+  if (!options.dryRun) {
+    const issueNumbers = new Map([...linked.entries()].map(([storyId, issue]) => [storyId, issue.number]));
+    for (const story of stories) {
+      const issue = linked.get(story.storyId);
+      if (!issue) continue;
+      const body = resolveDependencies(story.body, issueNumbers);
+      if (issue.body === body && issue.title === `[${story.storyId}] ${story.title}`) continue;
+      await client.updateIssue(issue.number, { title: `[${story.storyId}] ${story.title}`, body });
+      if (result.existing.some((item) => item.storyId === story.storyId)) result.updated.push({ storyId: story.storyId, issueNumber: issue.number });
+    }
   }
   return result;
 }
@@ -73,11 +84,24 @@ function normalizeContent(body: string, frontmatter: Record<string, string>, tit
   const objective = section(body, ["user story", "objective", "objetivo"]) || frontmatter.objective || title;
   const acceptance = section(body, ["acceptance criteria", "criterios de aceptación", "criterios de aceptaciÃ³n", "criterios de aceptacion"]);
   const scope = section(body, ["scope", "alcance", "contexto técnico necesario", "contexto tÃ©cnico necesario"]) || "Target repository application";
-  const dependencies = frontmatter.dependencies || body.match(/dependencias:\s*([^\.\n]+)/i)?.[1]?.trim() || "None";
-  const priorityRaw = frontmatter.priority || body.match(/prioridad:\s*P?(\d+)/i)?.[1] || "1";
+  const dependencyValue = (frontmatter.dependencies || body.match(/dependencias:\s*\**\s*([^\.\n]+)/i)?.[1]?.trim() || "None").replace(/\*/g, "").trim();
+  const dependencies = /^(none|ninguna)$/i.test(dependencyValue) ? "None" : dependencyValue;
+  const priorityRaw = frontmatter.priority || body.match(/prioridad:\s*\**\s*P?(\d+)/i)?.[1] || "1";
   const priority = String(Math.max(1, Number(priorityRaw) + (/[Pp]\d+/.test(priorityRaw) ? 1 : 0)) || 1);
   const validation = section(body, ["validation", "validación técnica", "validaciÃ³n tÃ©cnica", "validacion tecnica"]) || "Use the configured validation commands.";
   return [`# ${title}`, "## Objective", objective, "## Acceptance criteria", acceptance ? acceptance.split(/\r?\n/).filter(Boolean).map((line) => line.match(/^\s*[-*]\s+/) ? line : `- ${line.trim()}`).join("\n") : "- Define the acceptance criteria in the backlog story.", "## Scope", scope.replace(/\r?\n/g, " "), "## Dependencies", dependencies, "## Priority", priority, "## Validation", validation].join("\n\n").trim();
+}
+
+function resolveDependencies(body: string, issueNumbers: Map<string, number>): string {
+  return body.replace(/(## Dependencies\s*\n\s*)([^\n]+)/i, (_match, prefix: string, value: string) => {
+    const dependencies = value.trim();
+    if (/^(none|ninguna)$/i.test(dependencies)) return `${prefix}None`;
+    const resolved = dependencies.split(/[,\s]+/).filter(Boolean).map((dependency) => {
+      const number = issueNumbers.get(dependency.replace(/^#/, ""));
+      return number ? `#${number}` : dependency;
+    });
+    return `${prefix}${resolved.join(", ")}`;
+  });
 }
 
 function section(markdown: string, names: string[]): string {
