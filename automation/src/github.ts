@@ -2,6 +2,7 @@ import type { CheckRun, Issue, PullRequest } from "./types.js";
 
 export interface GitHubClient {
   listIssues(): Promise<Issue[]>;
+  createIssue(input: { title: string; body: string; labels: string[] }): Promise<Issue>;
   listPullRequests(branch: string): Promise<PullRequest[]>;
   getPullRequest(number: number): Promise<PullRequest>;
   getChecks(headSha: string): Promise<CheckRun[]>;
@@ -41,6 +42,11 @@ export class RestGitHubClient implements GitHubClient {
     return values.filter((item) => !item.pull_request).map((item) => ({ number: item.number, title: item.title, body: item.body || "", state: item.state, labels: item.labels.map((label) => label.name || "") }));
   }
 
+  async createIssue(input: { title: string; body: string; labels: string[] }): Promise<Issue> {
+    const item = await this.request<{ number: number; title: string; body: string | null; state: "open" | "closed"; labels: Array<{ name?: string }> }>(this.path("/issues"), { method: "POST", body: JSON.stringify(input) });
+    return { number: item.number, title: item.title, body: item.body || "", state: item.state, labels: item.labels.map((label) => label.name || "") };
+  }
+
   async listPullRequests(branch: string): Promise<PullRequest[]> {
     const values = await this.request<Array<{ number: number; title: string; body: string | null; state: "open" | "closed"; merged_at: string | null; head: { ref: string; sha: string }; base: { ref: string } }>>(this.path(`/pulls?state=open&head=${encodeURIComponent(`${this.owner}:${branch}`)}&per_page=100`));
     return values.map((item) => ({ number: item.number, title: item.title, body: item.body || "", state: item.state, merged: Boolean(item.merged_at), headBranch: item.head.ref, headSha: item.head.sha, baseBranch: item.base.ref }));
@@ -66,4 +72,3 @@ export class RestGitHubClient implements GitHubClient {
   async comment(issueNumber: number, body: string): Promise<void> { await this.request(this.path(`/issues/${issueNumber}/comments`), { method: "POST", body: JSON.stringify({ body }) }); }
   async mergePullRequest(number: number, expectedSha: string): Promise<{ merged: boolean; message: string }> { return await this.request(this.path(`/pulls/${number}/merge`), { method: "PUT", body: JSON.stringify({ sha: expectedSha, merge_method: "squash" }) }); }
 }
-

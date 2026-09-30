@@ -12,7 +12,8 @@
     "test": "npm run build && node dist/tests/all.test.js",
     "coverage": "npm run build && c8 --exclude=dist/src/config.js --exclude=dist/src/doctor.js --exclude=dist/src/index.js --exclude=dist/src/types.js --exclude=dist/tests/** --reporter=text --reporter=lcov --check-coverage --lines=60 --functions=60 --branches=50 --statements=60 node dist/tests/all.test.js",
     "doctor": "npm run build && node dist/src/doctor.js",
-    "orchestrate": "npm run build && node dist/src/orchestrator.js"
+    "orchestrate": "npm run build && node dist/src/orchestrator.js",
+    "sync-backlog": "npm run build && node dist/src/orchestrator.js --sync-backlog"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

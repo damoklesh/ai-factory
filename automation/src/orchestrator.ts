@@ -5,20 +5,23 @@ import { loadConfig } from "./config.js";
 import { CodexRunError, CodexRunner } from "./codex.js";
 import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubClient } from "./github.js";
 import { commitAndPush, createWorktree, gitDiff, removeWorktree, type Worktree } from "./git.js";
+import { ensureTargetRepository } from "./git.js";
+import { syncBacklog } from "./backlog.js";
 import { loadState, saveState, transition, canStartFix } from "./state.js";
 import { mergeReviewedPullRequest } from "./merge.js";
 import { parseStory, selectNextStory } from "./stories.js";
 import { runValidation, validationsPassed, waitForRequiredChecks } from "./verify.js";
 import type { Issue, OrchestrationConfig, PullRequest, StoryContract, StoryState } from "./types.js";
 
-export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; maxStories?: number; autoMerge?: boolean; }
+export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; }
 
 export function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = { configPath: process.env.AI_FACTORY_CONFIG || "config.json", dryRun: false, mock: false };
+  const options: CliOptions = { configPath: process.env.AI_FACTORY_CONFIG || "config.json", dryRun: false, mock: false, syncBacklog: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--mock") options.mock = true;
+    else if (arg === "--sync-backlog") options.syncBacklog = true;
     else if (arg === "--config") options.configPath = args[++index] || options.configPath;
     else if (arg === "--max-stories") options.maxStories = Number(args[++index]);
     else if (arg === "--auto-merge") options.autoMerge = true;
@@ -49,10 +52,10 @@ async function mark(client: GitHubClient, issue: Issue, status: "agent:running" 
   await client.setIssueLabels(issue.number, replaceAgentLabel(issue.labels, status));
 }
 
-async function processStory(client: GitHubClient, config: OrchestrationConfig, issue: Issue, contract: StoryContract, stateFile: string): Promise<StoryStatusResult> {
+async function processStory(client: GitHubClient, config: OrchestrationConfig, target: { path: string; env?: NodeJS.ProcessEnv }, issue: Issue, contract: StoryContract, stateFile: string): Promise<StoryStatusResult> {
   const state = await loadState(stateFile);
   const branch = `agent/issue-${issue.number}`;
-  const root = repoRoot();
+  const root = target.path;
   let worktree: Worktree | undefined;
   let pullRequest: PullRequest | undefined = (await client.listPullRequests(branch))[0];
   let feedback = "";
@@ -62,7 +65,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, i
   await saveState(stateFile, state);
   await mark(client, issue, "agent:running");
   try {
-    worktree = await createWorktree(root, config.baseBranch, branch);
+    worktree = await createWorktree(root, config.targetBranch, branch, { env: target.env });
     const codex = new CodexRunner(root, config.model);
     for (let cycle = firstCycle; cycle <= config.maxFixCycles; cycle += 1) {
       transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined });
@@ -87,7 +90,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, i
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         continue;
       }
-      const commit = await commitAndPush(worktree.path, branch, `feat: implement US #${issue.number}`);
+      const commit = await commitAndPush(worktree.path, branch, `feat: implement US #${issue.number}`, { env: target.env });
       if (!pullRequest) pullRequest = await client.createPullRequest({ title: issue.title, body: buildPullRequestBody(issue.number, branch), headBranch: branch, baseBranch: config.baseBranch });
       transition(state, issue.number, "PR_OPEN", { pullRequestNumber: pullRequest.number, headSha: commit.sha, branch, fixCycles: cycle });
       await saveState(stateFile, state);
@@ -180,9 +183,11 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
     console.log("AI Factory dry-run: no GitHub, worktree, Codex, push, or merge operation will be performed.");
     if (!existsSync(options.configPath)) { console.log(`Config not found at ${options.configPath}; copy config.example.json for a configured run.`); return 0; }
     const config = loadConfig(options.configPath);
-    console.log(`Repository: ${config.owner}/${config.repo}`);
-    console.log(`Base branch: ${config.baseBranch}; max stories: ${options.maxStories ?? config.maxStories}; autoMerge: ${options.autoMerge ?? config.autoMerge}`);
+    console.log(`Control repository: ${config.controlRepository || "current checkout"}`);
+    console.log(`Target repository: ${config.targetRepository}`);
+    console.log(`Target branch: ${config.targetBranch}; max stories: ${options.maxStories ?? config.maxStories}; autoMerge: ${options.autoMerge ?? config.autoMerge}`);
     console.log(`Validation commands: ${config.validationCommands.length}; required checks: ${config.requiredChecks.length}`);
+    if (options.syncBacklog) console.log(`Backlog sync: ${config.targetBacklogPath}`);
     return 0;
   }
   const config = loadConfig(options.configPath);
@@ -190,6 +195,12 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   if (!token) throw new Error("AGENT_GH_TOKEN or GITHUB_TOKEN is required for a configured run; use --dry-run or --mock without credentials.");
   const effectiveConfig = { ...config, maxStories: options.maxStories ?? config.maxStories, autoMerge: options.autoMerge ?? config.autoMerge };
   const client = new RestGitHubClient(config.owner, config.repo, token);
+  const target = await ensureTargetRepository(config, repoRoot(), token);
+  if (options.syncBacklog) {
+    const result = await syncBacklog(client, resolve(target.path, config.targetBacklogPath));
+    console.log(`Backlog sync completed: ${result.created.length} created, ${result.existing.length} already linked.`);
+    return 0;
+  }
   const stateFile = resolve(config.stateFile);
   const state = await loadState(stateFile);
   const issues = await client.listIssues();
@@ -197,7 +208,7 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   for (let count = 0; count < effectiveConfig.maxStories; count += 1) {
     const selection = selectNextStory(issues, completed);
     if (!selection) { console.log("No eligible agent:ready story found."); break; }
-    const result = await processStory(client, effectiveConfig, selection.issue, selection.contract, stateFile);
+    const result = await processStory(client, effectiveConfig, target, selection.issue, selection.contract, stateFile);
     console.log(`${result.status} #${selection.issue.number}`);
     if (result.status === "DONE") completed.add(selection.issue.number); else break;
   }

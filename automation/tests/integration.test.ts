@@ -59,7 +59,7 @@ test("runs the mock sprint and configured dry-run through the CLI entrypoint", a
     const dryCode = await runOrchestrator(["--dry-run", "--config", config]);
     assert.equal(dryCode, 0);
     assert.ok(output.some((line) => line.includes("MOCK MERGED #1")));
-    assert.ok(output.some((line) => line.includes("Repository: owner/repo")));
+    assert.ok(output.some((line) => line.includes("Target repository: owner/repo")));
   } finally {
     console.log = originalLog;
     await rm(directory, { recursive: true, force: true });
