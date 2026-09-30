@@ -127,6 +127,7 @@ export interface AppConfigView {
 
 export interface StartRunRequest { maxStories: number; autoMerge: boolean; expectedConfigRevision?: string; }
 export interface DecisionRequest { decision: "APPROVE" | "REJECT" | "DEFER"; reason?: string; expectedHeadSha?: string; expectedSpecRevision?: string; idempotencyKey: string; }
+export interface DecisionResult { accepted: boolean; decisionId?: string; requestId: string; status: ApprovalRequest["status"]; message: string; executionStatus: "PENDING" | "APPLIED" | "FAILED"; }
 export interface InstructionRequest { content: string; expectedRunStatus: ExecutionStatus; idempotencyKey: string; }
 export interface ConfigUpdateRequest { config: Partial<AppConfigView>; expectedRevision: string; idempotencyKey: string; }
 

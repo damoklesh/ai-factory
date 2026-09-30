@@ -42,6 +42,7 @@ export class AgentPersistence {
     const sanitized = sanitizeLogEntry(event);
     await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "events.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(sanitized)}\n`, "utf8"); });
   }
+  async appendDecision(runId: string, decision: unknown): Promise<void> { await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "decisions.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(decision)}\n`, "utf8"); }); }
   async readEvents(runId: string): Promise<LogEntry[]> {
     try {
       const content = await readFile(join(this.root, "runs", runId, "events.jsonl"), "utf8");

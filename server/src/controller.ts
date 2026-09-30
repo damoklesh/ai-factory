@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ApprovalRequest, AppConfigView, Diagnostic, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, StartRunRequest, StoryDetail, StorySummary } from "@ai-factory/contracts";
+import type { ApprovalRequest, AppConfigView, DecisionRequest, DecisionResult, Diagnostic, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, StartRunRequest, StoryDetail, StorySummary } from "@ai-factory/contracts";
 import { SCHEMA_VERSION } from "@ai-factory/contracts";
 import { AgentPersistence } from "./persistence.js";
 import { loadRepositoryStories } from "./stories.js";
@@ -9,13 +9,14 @@ type Listener = (event: LogEntry) => void;
 export class LocalController {
   private readonly listeners = new Set<Listener>();
   private activeRun?: RunSnapshot;
-  private readonly approvalItems: ApprovalRequest[] = [];
+  private readonly approvalItems: ApprovalRequest[];
+  private readonly decisions = new Map<string, DecisionResult>();
   private stories: StoryDetail[] = [];
   private storiesLoaded = false;
   private runHistory: RunSnapshot[] = [];
   private runsLoaded = false;
   private readonly config: AppConfigView = { owner: "OWNER", repo: "REPO", baseBranch: "main", validationCommands: [], requiredChecks: [], maxStories: 1, maxFixCycles: 3, autoMerge: false, stateFile: ".agent/state.json" };
-  constructor(private readonly persistence = new AgentPersistence(), private readonly options: { codexAvailable?: boolean; githubConnected?: boolean; backlogRoot?: string } = {}) {}
+  constructor(private readonly persistence = new AgentPersistence(), private readonly options: { codexAvailable?: boolean; githubConnected?: boolean; backlogRoot?: string; approvals?: ApprovalRequest[] } = {}) { this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
 
   async project(): Promise<ProjectSnapshot> {
     await this.ensureStories();
@@ -41,6 +42,20 @@ export class LocalController {
   async logs(runId: string, options: { cursor?: number; limit?: number; level?: LogEntry["level"]; source?: LogEntry["source"]; search?: string } = {}): Promise<LogPage> { return this.persistence.readEventsPage(runId, options); }
   async eventsSince(cursor = 0): Promise<LogEntry[]> { await this.ensureRuns(); const events: LogEntry[] = []; for (const run of this.runHistory) events.push(...await this.persistence.readEvents(run.runId)); return events.filter((event) => event.sequence > cursor).sort((left, right) => left.timestamp.localeCompare(right.timestamp)); }
   async approvals(): Promise<ApprovalRequest[]> { return this.approvalItems; }
+  async decideApproval(requestId: string, request: DecisionRequest): Promise<DecisionResult> {
+    const previous = this.decisions.get(request.idempotencyKey); if (previous) return previous;
+    const approval = this.approvalItems.find((item) => item.requestId === requestId);
+    if (!approval) throw new Error("APPROVAL_NOT_FOUND");
+    if (approval.status !== "PENDING") throw new Error("APPROVAL_ALREADY_DECIDED");
+    if (request.decision === "REJECT" && !request.reason?.trim()) throw new Error("rejection reason required");
+    if ((approval.expectedHeadSha && approval.expectedHeadSha !== request.expectedHeadSha) || (approval.expectedSpecRevision && approval.expectedSpecRevision !== request.expectedSpecRevision)) throw new Error("STALE_APPROVAL");
+    if (approval.type === "MERGE" && request.decision === "APPROVE" && approval.evidence.some((item) => /(ci|check|test).*(fail|pending)|(fail|pending).*(ci|check|test)/i.test(item))) throw new Error("MERGE_CHECKS_NOT_PASSING");
+    const now = new Date().toISOString();
+    if (request.decision === "DEFER") { approval.status = "DEFERRED"; approval.decidedAt = now; approval.reason = request.reason; const result: DecisionResult = { accepted: true, requestId, status: "DEFERRED", message: "Decision deferred; the run remains blocked.", executionStatus: "PENDING" }; this.decisions.set(request.idempotencyKey, result); await this.persistence.appendDecision(approval.runId, { schemaVersion: 1, requestId, action: "DEFER", actor: "local-user", createdAt: now }); return result; }
+    approval.status = request.decision === "APPROVE" ? "APPROVED" : "REJECTED"; approval.decidedAt = now; approval.reason = request.reason;
+    const result: DecisionResult = { accepted: true, decisionId: randomUUID(), requestId, status: approval.status, message: request.decision === "APPROVE" ? (approval.type === "MERGE" ? "Approval recorded; GitHub checks and native review still apply." : "Approval recorded; the controller may continue at the next safe point.") : "Rejection recorded; the run remains blocked.", executionStatus: "PENDING" };
+    this.decisions.set(request.idempotencyKey, result); await this.persistence.appendDecision(approval.runId, { schemaVersion: 1, decisionId: result.decisionId, requestId, decision: request.decision, actor: "local-user", reason: request.reason, expectedHeadSha: request.expectedHeadSha, expectedSpecRevision: request.expectedSpecRevision, createdAt: now, executionStatus: "PENDING" }); return result;
+  }
   async configView(): Promise<AppConfigView & { revision: string }> { return { ...this.config, revision: "local-config-v1" }; }
   subscribe(listener: Listener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   async start(request: StartRunRequest): Promise<RunSnapshot> {
