@@ -18,7 +18,7 @@ export class CodexRunner {
     if (this.model) args.push("--model", this.model);
     args.push("-");
     const command = process.platform === "win32" ? "codex.cmd" : "codex";
-    const result: ProcessResult = await this.processRunner(command, args, { cwd, input: prompt, timeoutMs });
+    const result: ProcessResult = await this.processRunner(command, args, { cwd, input: prompt, timeoutMs, shell: process.platform === "win32" });
     let parsed: unknown;
     try {
       try { parsed = JSON.parse(await readFile(outputPath, "utf8")); } catch {

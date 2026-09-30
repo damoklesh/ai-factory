@@ -204,7 +204,7 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
     const selection = selectNextStory(issues, completed);
     if (!selection) { console.log("No eligible agent:ready story found."); break; }
     const result = await processStory(client, effectiveConfig, target, selection.issue, selection.contract, stateFile);
-    console.log(`${result.status} #${selection.issue.number}`);
+    console.log(`${result.status} #${selection.issue.number}${result.state.reason ? `: ${result.state.reason}` : ""}`);
     if (result.status === "DONE") completed.add(selection.issue.number); else break;
   }
   return 0;
