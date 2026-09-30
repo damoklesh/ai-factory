@@ -11,7 +11,7 @@ const uiDirectory = resolve(process.env.AI_FACTORY_UI_DIRECTORY || repositoryRoo
 const config = loadAppConfig();
 const token = githubToken();
 const githubAdapter = token && config.owner !== "OWNER" && config.repo !== "REPO" ? new GitHubSyncAdapter(config.owner, config.repo, token) : undefined;
-const targetWorkspace = resolve(repositoryRoot, "automation", config.targetWorkspace || join("..", "workspaces", config.repo));
+const targetWorkspace = resolve(repositoryRoot, config.targetWorkspace || join("..", "workspaces", config.repo));
 const backlogRoot = resolve(targetWorkspace, config.targetBacklogPath || "backlog");
 const app = createAppServer({ port, uiDirectory, controller: new LocalController(undefined, { githubAdapter, backlogRoot }) });
 app.server.listen(port, "127.0.0.1", () => {
