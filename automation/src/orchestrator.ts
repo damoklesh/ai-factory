@@ -46,7 +46,7 @@ async function mark(client: GitHubClient, issue: Issue, status: "agent:running" 
   await client.setIssueLabels(issue.number, replaceAgentLabel(issue.labels, status));
 }
 
-async function processStory(client: GitHubClient, config: OrchestrationConfig, target: { path: string; env?: NodeJS.ProcessEnv }, issue: Issue, contract: StoryContract, stateFile: string): Promise<StoryStatusResult> {
+async function processStory(client: GitHubClient, config: OrchestrationConfig, target: { path: string; controlRoot: string; env?: NodeJS.ProcessEnv }, issue: Issue, contract: StoryContract, stateFile: string): Promise<StoryStatusResult> {
   const state = await loadState(stateFile);
   const branch = `agent/issue-${issue.number}`;
   const root = target.path;
@@ -60,7 +60,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   await mark(client, issue, "agent:running");
   try {
     worktree = await createWorktree(root, config.targetBranch, branch, { env: target.env });
-    const codex = new CodexRunner(root, config.model);
+    const codex = new CodexRunner(target.controlRoot, config.model);
     for (let cycle = firstCycle; cycle <= config.maxFixCycles; cycle += 1) {
       transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined });
       await saveState(stateFile, state);
@@ -203,7 +203,7 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   for (let count = 0; count < effectiveConfig.maxStories; count += 1) {
     const selection = selectNextStory(issues, completed);
     if (!selection) { console.log("No eligible agent:ready story found."); break; }
-    const result = await processStory(client, effectiveConfig, target, selection.issue, selection.contract, stateFile);
+    const result = await processStory(client, effectiveConfig, { ...target, controlRoot }, selection.issue, selection.contract, stateFile);
     console.log(`${result.status} #${selection.issue.number}${result.state.reason ? `: ${result.state.reason}` : ""}`);
     if (result.status === "DONE") completed.add(selection.issue.number); else break;
   }
