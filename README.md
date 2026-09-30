@@ -120,7 +120,7 @@ Copy-Item config.example.json config.json
 | `targetRepository` | Repository whose Issues, code, branches, and PRs are managed | required, e.g. `OWNER/revenue-net-calculator` |
 | `targetBranch` | Branch used for target worktrees and PRs | `main` |
 | `targetBacklogPath` | Markdown backlog path inside the target repository | `backlog` |
-| `targetWorkspace` | Local checkout path, relative to `automation/` or absolute | `../workspaces/TARGET-REPOSITORY` |
+| `targetWorkspace` | Local checkout path, relative to the `ai-factory` repository root or absolute | `../workspaces/TARGET-REPOSITORY` |
 | `owner`, `repo`, `baseBranch` | Legacy aliases for the target repository and branch | supported for migration |
 | `runnerLabel` | Intended runner label | `ai-local`; currently also set in the workflow |
 | `model` | Optional Codex model override | empty |
