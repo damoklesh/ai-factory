@@ -41,6 +41,14 @@ export async function syncBacklog(client: GitHubClient, root: string, options: {
   return result;
 }
 
+export function backlogPath(targetRoot: string, configuredPath: string): string {
+  const root = resolve(targetRoot);
+  const path = resolve(root, configuredPath);
+  const relativePath = relative(root, path);
+  if (relativePath.startsWith("..") || relativePath === "") throw new Error("targetBacklogPath must point inside the target repository");
+  return path;
+}
+
 export function storyIssueId(issue: Issue): string | undefined { return issue.body.match(/AI_FACTORY_STORY_ID:\s*([^\s<]+)/i)?.[1] || issue.title.match(/^\[([^\]]+)\]/)?.[1]; }
 
 async function parseBacklogStory(fileName: string, markdown: string, root: string): Promise<BacklogStory> {

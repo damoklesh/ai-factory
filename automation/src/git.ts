@@ -2,6 +2,7 @@ import { access, mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import type { OrchestrationConfig } from "./types.js";
+import { targetWorkspacePath } from "./config.js";
 import { runProcess } from "./processes.js";
 
 export interface GitOptions { env?: NodeJS.ProcessEnv; }
@@ -13,6 +14,7 @@ async function git(cwd: string, args: string[], timeoutMs = 120_000, options: Gi
 }
 
 export async function gitSha(cwd: string): Promise<string> { return git(cwd, ["rev-parse", "HEAD"]); }
+export async function gitRoot(cwd: string): Promise<string> { return resolve(await git(cwd, ["rev-parse", "--show-toplevel"])); }
 export async function gitStatus(cwd: string): Promise<string> { return git(cwd, ["status", "--porcelain"]); }
 export async function gitDiff(cwd: string, baseBranch: string): Promise<string> { return git(cwd, ["diff", `${baseBranch}...HEAD`]); }
 export async function commitAndPush(cwd: string, branch: string, message: string, options: GitOptions = {}): Promise<{ sha: string; changed: boolean }> {
@@ -60,12 +62,16 @@ export function gitAuthEnv(token?: string): NodeJS.ProcessEnv | undefined {
 }
 
 export async function ensureTargetRepository(config: OrchestrationConfig, controlRoot: string, token?: string): Promise<{ path: string; env?: NodeJS.ProcessEnv }> {
-  const path = resolve(process.cwd(), config.targetWorkspace || join("..", "workspaces", config.repo));
+  const path = targetWorkspacePath(config, controlRoot);
   const control = resolve(controlRoot);
   const relativePath = relative(control, path);
   if (!relativePath.startsWith("..") || relativePath === "") throw new Error("target workspace must be outside the ai-factory control repository");
   const env = gitAuthEnv(token);
   const remoteUrl = `https://github.com/${config.targetRepository}.git`;
+  if (config.controlRepository) {
+    const controlRemote = await git(control, ["remote", "get-url", "origin"], 120_000, { env });
+    if (!matchesRepository(controlRemote, config.controlRepository)) throw new Error(`control repository origin does not match ${config.controlRepository}`);
+  }
   let exists = true;
   try { await access(path); } catch { exists = false; }
   if (exists) {

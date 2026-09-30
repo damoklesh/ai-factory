@@ -50,5 +50,5 @@ export function loadConfig(filePath = process.env.AI_FACTORY_CONFIG || "config.j
 }
 
 export function targetWorkspacePath(config: OrchestrationConfig, controlRoot: string): string {
-  return resolve(process.cwd(), config.targetWorkspace || join("..", "workspaces", config.repo));
+  return resolve(controlRoot, config.targetWorkspace || join("..", "workspaces", config.repo));
 }

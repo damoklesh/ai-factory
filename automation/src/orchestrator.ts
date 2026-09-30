@@ -4,9 +4,8 @@ import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
 import { CodexRunError, CodexRunner } from "./codex.js";
 import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubClient } from "./github.js";
-import { commitAndPush, createWorktree, gitDiff, removeWorktree, type Worktree } from "./git.js";
-import { ensureTargetRepository } from "./git.js";
-import { syncBacklog } from "./backlog.js";
+import { commitAndPush, createWorktree, gitDiff, gitRoot, removeWorktree, ensureTargetRepository, type Worktree } from "./git.js";
+import { backlogPath, syncBacklog } from "./backlog.js";
 import { loadState, saveState, transition, canStartFix } from "./state.js";
 import { mergeReviewedPullRequest } from "./merge.js";
 import { parseStory, selectNextStory } from "./stories.js";
@@ -29,11 +28,6 @@ export function parseArgs(args: string[]): CliOptions {
   }
   if (options.maxStories !== undefined && (!Number.isInteger(options.maxStories) || options.maxStories < 1)) throw new Error("--max-stories must be a positive integer");
   return options;
-}
-
-function repoRoot(): string {
-  // The workflow runs from automation/, while local users may invoke the compiled entrypoint elsewhere.
-  return resolve(process.cwd(), "..");
 }
 
 function storyPrompt(issue: Issue, contract: StoryContract, feedback = ""): string {
@@ -195,9 +189,10 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   if (!token) throw new Error("AGENT_GH_TOKEN or GITHUB_TOKEN is required for a configured run; use --dry-run or --mock without credentials.");
   const effectiveConfig = { ...config, maxStories: options.maxStories ?? config.maxStories, autoMerge: options.autoMerge ?? config.autoMerge };
   const client = new RestGitHubClient(config.owner, config.repo, token);
-  const target = await ensureTargetRepository(config, repoRoot(), token);
+  const controlRoot = await gitRoot(process.cwd());
+  const target = await ensureTargetRepository(config, controlRoot, token);
   if (options.syncBacklog) {
-    const result = await syncBacklog(client, resolve(target.path, config.targetBacklogPath));
+    const result = await syncBacklog(client, backlogPath(target.path, config.targetBacklogPath));
     console.log(`Backlog sync completed: ${result.created.length} created, ${result.existing.length} already linked.`);
     return 0;
   }
