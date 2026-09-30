@@ -11,9 +11,22 @@ npm run dev
 
 It listens on `http://127.0.0.1:3333` by default. `npm run start` uses the same production build and local controller. Opening the page only reads project state; it never starts a run. Mutations require the browser session cookie and an exact same-origin `Origin` header. GitHub and Codex diagnostics are displayed without exposing credentials.
 
+The UI packages are `ui/` (React), `server/` (Node HTTP API and local controller), and `packages/contracts/` (shared TypeScript contracts). Markdown stories are read from `backlog/` when that directory exists. Operational state is written to `.agent/`, which remains ignored by Git.
+
+Useful commands:
+
+```bash
+npm run build   # contracts, server and UI
+npm test        # build plus deterministic server/persistence/controller tests
+npm run dev     # build and serve on loopback
+npm run start   # production-style local start
+```
+
+The GitHub adapter in this UI pass is simulated through controller options for deterministic tests. A real private-repository pilot still needs credentials configured only in the backend/runner and must validate native GitHub checks and reviews manually. `autoMerge` remains disabled by default.
+
 AI Factory is a local-first TypeScript automation controller for implementing small GitHub Issues with Codex CLI. It selects one eligible user story, gives an isolated worktree to a Developer Codex process, runs configured validation, opens or reuses a pull request, waits for required CI checks, asks a fresh Reviewer Codex process for a structured review, and optionally merges only when the reviewed commit SHA is still current.
 
-This repository contains the controller described by [`AI_Factory_V1_Plan.md`](AI_Factory_V1_Plan.md). It is an automation tool, not a product web application: there is no server, database, UI, or mandatory paid OpenAI API integration.
+This repository contains the automation controller described by [`AI_Factory_V1_Plan.md`](AI_Factory_V1_Plan.md) plus the local supervision server and UI described by `Orquestrator UI.md`. The UI is local-first and uses files rather than a database.
 
 ## Current status
 
