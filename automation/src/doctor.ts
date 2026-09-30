@@ -32,7 +32,7 @@ export async function runDoctor(): Promise<number> {
     try { config = loadConfig(configPath); checks.push({ name: "config", ok: true, detail: configPath }); }
     catch (error) { checks.push({ name: "config", ok: false, detail: error instanceof Error ? error.message : String(error) }); }
   }
-  const token = process.env.AGENT_GH_TOKEN || process.env.GITHUB_TOKEN;
+  const token = (process.env.AGENT_GH_TOKEN || process.env.GITHUB_TOKEN || "").trim();
   if (!token) checks.push({ name: "github-auth", ok: false, detail: "AGENT_GH_TOKEN/GITHUB_TOKEN is not set (value never printed)" });
   else if (config) checks.push(await githubCheck(config.owner, config.repo, token));
   else checks.push({ name: "github-permissions", ok: false, detail: "cannot check permissions until config is valid" });

@@ -185,7 +185,7 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
     return 0;
   }
   const config = loadConfig(options.configPath);
-  const token = process.env.AGENT_GH_TOKEN || process.env.GITHUB_TOKEN;
+  const token = (process.env.AGENT_GH_TOKEN || process.env.GITHUB_TOKEN || "").trim();
   if (!token) throw new Error("AGENT_GH_TOKEN or GITHUB_TOKEN is required for a configured run; use --dry-run or --mock without credentials.");
   const effectiveConfig = { ...config, maxStories: options.maxStories ?? config.maxStories, autoMerge: options.autoMerge ?? config.autoMerge };
   const client = new RestGitHubClient(config.owner, config.repo, token);
