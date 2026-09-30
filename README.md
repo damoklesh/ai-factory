@@ -192,6 +192,203 @@ Do not enable `--auto-merge` on the first run. Review the PR, CI, state file, la
 
 The Action checkout uses the default branch controller. A PR must not be allowed to execute a modified orchestrator while that PR is being reviewed.
 
+## Complete setup: Windows, WSL2, runner and token
+
+The workflow in `.github/workflows/agent-orchestrator.yml` requests a runner with these labels:
+
+```yaml
+runs-on: [self-hosted, linux, ai-local]
+```
+
+Therefore a native Windows runner is not enough for the current workflow. On a Windows machine, use WSL2 with Ubuntu, or change the workflow deliberately after human review.
+
+### 1. Install WSL2 on Windows
+
+Run PowerShell as Administrator:
+
+```powershell
+wsl --install -d Ubuntu-22.04
+```
+
+Restart Windows if requested, open Ubuntu, create the Linux user, then install the basic tools:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y curl git build-essential
+```
+
+Install Node.js 20 or newer. For example, with `nvm`:
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+source ~/.bashrc
+nvm install 20
+nvm use 20
+node --version
+npm --version
+```
+
+### 2. Create the GitHub self-hosted runner
+
+In the target repository, open:
+
+```text
+Settings > Actions > Runners > New self-hosted runner
+```
+
+Select **Linux** and **x64**. GitHub will display commands containing the current runner download URL and a temporary registration token. Run those commands inside WSL2, not in the Windows PowerShell window. The registration token is temporary and must never be committed.
+
+The resulting runner directory can be, for example:
+
+```bash
+mkdir -p "$HOME/actions-runner"
+cd "$HOME/actions-runner"
+# Paste here the download, extract and config commands shown by GitHub.
+./config.sh --url https://github.com/OWNER/REPO --token TEMPORARY_REGISTRATION_TOKEN --labels ai-local
+```
+
+When prompted, use the repository URL, keep the runner attached to the repository, and confirm the `ai-local` label. Start it interactively while testing:
+
+```bash
+./run.sh
+```
+
+After it works, install it as a service if the WSL2 environment is kept running:
+
+```bash
+sudo ./svc.sh install
+sudo ./svc.sh start
+sudo ./svc.sh status
+```
+
+If systemd is not enabled in WSL2, use `./run.sh` in a dedicated Ubuntu terminal instead of installing the service. Do not close that terminal while testing the runner.
+
+The runner must show **Idle** in GitHub before launching the workflow. The runner user needs access to the checkout directory and to the local Codex profile.
+
+Official GitHub guide: [adding a self-hosted runner](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/adding-self-hosted-runners).
+
+### 3. Create the GitHub access token
+
+Create a **fine-grained personal access token** at:
+
+```text
+https://github.com/settings/personal-access-tokens/fine-grained/new
+```
+
+Use these values:
+
+1. Token name: for example `Icara AI Factory`.
+2. Expiration: use a short expiry suitable for the pilot.
+3. Resource owner: the user or organization that owns the repository.
+4. Repository access: **Only select repositories**, then select the pilot repository.
+5. Repository permissions required by the workflow:
+
+   - **Contents: Read and write**
+   - **Issues: Read and write**
+   - **Pull requests: Read and write**
+   - **Checks: Read**
+   - **Actions: Read**
+
+Generate the token and copy it immediately; GitHub does not show the full value again. If the repository belongs to an organization, an administrator may need to approve the token.
+
+### 4. Store the token safely
+
+For GitHub Actions, create a repository secret at:
+
+```text
+Settings > Secrets and variables > Actions > New repository secret
+```
+
+Use exactly this name:
+
+```text
+AGENT_GH_TOKEN
+```
+
+The workflow already maps that secret into the job as `AGENT_GH_TOKEN`:
+
+```yaml
+env:
+  AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+```
+
+Do not put the token in `automation/config.json`, source code, prompts, `.agent/`, or a commit.
+
+For a local run inside PowerShell, set it only for the current terminal session:
+
+```powershell
+$env:AGENT_GH_TOKEN = "github_pat_..."
+cd C:\Users\damoklesh\workspace\Icara\automation
+npm run doctor
+npm run orchestrate -- --max-stories 1
+Remove-Item Env:AGENT_GH_TOKEN
+```
+
+For a local run inside WSL2:
+
+```bash
+export AGENT_GH_TOKEN='github_pat_...'
+cd /path/to/Icara/automation
+npm run doctor
+npm run orchestrate -- --max-stories 1
+unset AGENT_GH_TOKEN
+```
+
+The code also accepts `GITHUB_TOKEN` as a fallback, but `AGENT_GH_TOKEN` is the explicit name used by this repository.
+
+### 5. Configure the repository and validate the runner
+
+Copy the configuration on the runner:
+
+```bash
+cd /path/to/Icara/automation
+cp config.example.json config.json
+```
+
+Edit the repository fields. If the repository URL is `https://github.com/damoklesh/revenue-net-calculator`, the values are:
+
+```json
+{
+  "owner": "damoklesh",
+  "repo": "revenue-net-calculator",
+  "baseBranch": "main",
+  "runnerLabel": "ai-local",
+  "maxStories": 1,
+  "maxFixCycles": 3,
+  "autoMerge": false
+}
+```
+
+The repository name must not contain a trailing newline, slash, or `.git` suffix.
+
+Install and verify:
+
+```bash
+npm ci
+npm run doctor
+npm test
+npm run orchestrate -- --dry-run
+```
+
+The expected result is `PASS` for Node, npm, Git, config, and `github-permissions`. A missing `codex` command is a blocker for a real run, but not for the dry-run or mock tests.
+
+### 6. Install and authenticate Codex on the runner
+
+The desktop application on Windows is not the same as the `codex` executable launched by the orchestrator. Install the CLI in the same environment and as the same user that runs the GitHub runner:
+
+```bash
+npm install -g @openai/codex@latest
+codex --version
+codex login
+codex login status
+```
+
+Do not copy Codex authentication files into the repository. The runner service and interactive shell must use the same Linux user/profile.
+
+### 7. About `launch_with_cache_clear.sh`
+
+`launch_with_cache_clear.sh` is not part of this repository and is not required by AI Factory. If it belongs to another application, such as Stable Diffusion, keep it outside this setup. The AI Factory runner should execute the commands from `.github/workflows/agent-orchestrator.yml` and the commands configured in `automation/config.json`.
+
 ## Issue contract
 
 Each Issue must contain these headings, generated by the Issue Form or written manually:
