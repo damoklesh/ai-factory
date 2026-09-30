@@ -95,7 +95,7 @@ For a real pilot:
 - GitHub Actions enabled and repository workflow permissions configured.
 - Two small disposable Issues using the story template.
 
-The controller does not register runners, change branch rules, create Issues, or configure GitHub on your behalf.
+The controller does not register runners, change branch rules, or configure GitHub on your behalf. The explicit `sync-backlog` command can create target-repository Issues from Markdown stories; normal orchestration never creates duplicate Issues automatically.
 
 ## Configuration
 
@@ -116,8 +116,12 @@ Copy-Item config.example.json config.json
 
 | Setting | Purpose | Typical value / default |
 | --- | --- | --- |
-| `owner`, `repo` | GitHub repository | required; replace `OWNER`/`REPO` |
-| `baseBranch` | Branch used for new worktrees and PRs | `main` |
+| `controlRepository` | Repository containing this trusted controller | informational safety check, e.g. `OWNER/ai-factory` |
+| `targetRepository` | Repository whose Issues, code, branches, and PRs are managed | required, e.g. `OWNER/revenue-net-calculator` |
+| `targetBranch` | Branch used for target worktrees and PRs | `main` |
+| `targetBacklogPath` | Markdown backlog path inside the target repository | `backlog` |
+| `targetWorkspace` | Local checkout path, relative to `automation/` or absolute | `../workspaces/TARGET-REPOSITORY` |
+| `owner`, `repo`, `baseBranch` | Legacy aliases for the target repository and branch | supported for migration |
 | `runnerLabel` | Intended runner label | `ai-local`; currently also set in the workflow |
 | `model` | Optional Codex model override | empty |
 | `validationCommands` | Commands repeated by the controller in the worktree | project-specific, e.g. `npm test` |
@@ -136,7 +140,7 @@ Copy-Item config.example.json config.json
 
 | Name / setting | Where it belongs | Required for |
 | --- | --- | --- |
-| `AGENT_GH_TOKEN` | GitHub Actions secret or runner environment | Real GitHub API operations |
+| `AGENT_GH_TOKEN` | GitHub Actions secret or runner environment | Target clone, Issues, PRs, pushes, and checks |
 | `GITHUB_TOKEN` | Native Actions token fallback | Supported fallback, but the fine-grained PAT is preferred |
 | Codex ChatGPT login | Local Codex profile of the runner user | Developer and Reviewer invocations |
 | `AI_FACTORY_CONFIG` | Runner environment variable | Config outside `automation/config.json` |
@@ -145,7 +149,7 @@ Copy-Item config.example.json config.json
 | `agent:ready`, `agent:running`, `agent:blocked`, `agent:done` | GitHub Issue labels | Visible state and selection |
 | `ai-local` | Self-hosted runner label | Workflow routing |
 
-The fine-grained PAT should be restricted to the pilot repository and granted only the required Contents, Issues, Pull requests, Checks, and Actions read permissions. Never put the PAT, Codex auth files, or runner registration token in this repository or in prompts. Rotate the PAT and set an expiry.
+The fine-grained PAT should be restricted to the target repository and granted only the required Contents read/write, Issues read/write, Pull requests read/write, Checks read, Actions read, and Metadata read permissions. Never put the PAT, Codex auth files, or runner registration token in this repository or in prompts. Rotate the PAT and set an expiry.
 
 The GitHub Actions workflow also needs repository settings that allow the selected workflow to run and permit the intended PR/Issue operations. Branch protection, required approvals, and merge rules can intentionally stop the controller; do not weaken them to force automation through.
 
@@ -155,7 +159,7 @@ From the repository root, configure the repository and token before starting the
 
 ```powershell
 Copy-Item automation/config.example.json automation/config.json
-# Edit automation/config.json and replace OWNER/REPO with the real values.
+# Edit automation/config.json and set targetRepository and targetBranch.
 $env:AGENT_GH_TOKEN = "<fine-grained-token>"
 npm run dev
 ```
@@ -171,10 +175,14 @@ npm ci
 npm run doctor
 npm test
 npm run orchestrate -- --dry-run
+npm run sync-backlog -- --dry-run
+npm run sync-backlog
 npm run orchestrate -- --mock --max-stories 2
 ```
 
 `doctor` reports missing config, authentication, and (when config/token are present) GitHub repository access without printing token values. Missing config/auth warnings are expected on a fresh checkout; missing Node, npm, Git, or Codex is a failing prerequisite.
+
+`sync-backlog --dry-run` previews stories that would be created. Run `sync-backlog` from `automation/` after the target checkout is available. It creates an Issue only when the stable `AI_FACTORY_STORY_ID` marker is not already present. The normal orchestrator then reads Issues from `targetRepository` and works only in its target workspace.
 
 The configured real run is intentionally explicit:
 

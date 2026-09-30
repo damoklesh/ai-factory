@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAppServer } from "./http.js";
 import { githubToken, loadAppConfig } from "./config.js";
@@ -11,7 +11,9 @@ const uiDirectory = resolve(process.env.AI_FACTORY_UI_DIRECTORY || repositoryRoo
 const config = loadAppConfig();
 const token = githubToken();
 const githubAdapter = token && config.owner !== "OWNER" && config.repo !== "REPO" ? new GitHubSyncAdapter(config.owner, config.repo, token) : undefined;
-const app = createAppServer({ port, uiDirectory, controller: new LocalController(undefined, { githubAdapter }) });
+const targetWorkspace = resolve(repositoryRoot, "automation", config.targetWorkspace || join("..", "workspaces", config.repo));
+const backlogRoot = resolve(targetWorkspace, config.targetBacklogPath || "backlog");
+const app = createAppServer({ port, uiDirectory, controller: new LocalController(undefined, { githubAdapter, backlogRoot }) });
 app.server.listen(port, "127.0.0.1", () => {
   console.log(`AI Factory UI listening at http://127.0.0.1:${port}`);
   if (githubAdapter) void app.controller.sync();

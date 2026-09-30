@@ -1,7 +1,7 @@
 import type { GithubObservation, StoryDetail } from "@ai-factory/contracts";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
-type Issue = { number: number; state: "open" | "closed" };
+type Issue = { number: number; state: "open" | "closed"; title: string; body: string | null };
 type PullRequest = { number: number; state: "open" | "closed"; merged_at: string | null; body: string | null; title: string; head: { ref: string; sha: string } };
 type CheckRun = { status: "queued" | "in_progress" | "completed"; conclusion: string | null; head_sha: string };
 
@@ -15,18 +15,20 @@ export class GitHubSyncAdapter {
     const observations: GithubObservation[] = [];
     for (const story of stories) {
       if (!story.githubIssueNumber) continue;
-      const issue = issues.find((item) => item.number === story.githubIssueNumber);
+      const issue = issues.find((item) => item.number === story.githubIssueNumber) || issues.find((item) => item.title.startsWith(`[${story.storyId}]`) || (item.body || "").includes(`AI_FACTORY_STORY_ID: ${story.storyId}`));
+      const issueNumber = story.githubIssueNumber || issue?.number;
+      if (!issueNumber) continue;
       const pullRequest = pullRequests.find((item) => item.number === story.pullRequestNumber) || pullRequests.find((item) => {
-        const marker = `#${story.githubIssueNumber}`;
-        return item.head.ref === `agent/issue-${story.githubIssueNumber}` || item.title.includes(marker) || (item.body || "").includes(marker);
+        const marker = `#${issueNumber}`;
+        return item.head.ref === `agent/issue-${issueNumber}` || item.title.includes(marker) || (item.body || "").includes(marker);
       });
       const checkedAt = new Date().toISOString();
       if (!pullRequest) {
-        observations.push({ storyId: story.storyId, state: issue?.state === "closed" ? "CLOSED" : "OPEN", checks: "UNKNOWN", checkedAt });
+        observations.push({ storyId: story.storyId, githubIssueNumber: issueNumber, state: issue?.state === "closed" ? "CLOSED" : "OPEN", checks: "UNKNOWN", checkedAt });
         continue;
       }
       const checks = await this.request<{ check_runs: CheckRun[] }>(`/commits/${encodeURIComponent(pullRequest.head.sha)}/check-runs`);
-      observations.push({ storyId: story.storyId, pullRequestNumber: pullRequest.number, headSha: pullRequest.head.sha, state: pullRequest.merged_at ? "MERGED" : pullRequest.state === "open" ? "OPEN" : "CLOSED", checks: checkStatus(checks.check_runs), checkedAt });
+      observations.push({ storyId: story.storyId, githubIssueNumber: issueNumber, pullRequestNumber: pullRequest.number, headSha: pullRequest.head.sha, state: pullRequest.merged_at ? "MERGED" : pullRequest.state === "open" ? "OPEN" : "CLOSED", checks: checkStatus(checks.check_runs), checkedAt });
     }
     return observations;
   }
