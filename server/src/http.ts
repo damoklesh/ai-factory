@@ -28,8 +28,8 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
       }
       if (request.method !== "GET" && (!hasSession(request, session) || !mutationOriginAllowed(request, origin))) return json(response, 403, { code: "AUTH_REQUIRED", message: "valid local session and same-origin request required" });
       if (request.method === "GET" && path === "/api/project") return json(response, 200, await controller.project());
-      if (request.method === "GET" && path === "/api/stories") return json(response, 200, await controller.listStories());
-      if (request.method === "GET" && path.startsWith("/api/stories/")) return json(response, 200, await controller.story(decodeURIComponent(path.slice("/api/stories/".length))) || { code: "NOT_FOUND", message: "story not found" });
+      if (request.method === "GET" && path === "/api/stories") return json(response, 200, await controller.listStories({ search: url.searchParams.get("search") || undefined, status: url.searchParams.get("status") || undefined }));
+      if (request.method === "GET" && path.startsWith("/api/stories/")) { const story = await controller.story(decodeURIComponent(path.slice("/api/stories/".length))); return story ? json(response, 200, story) : json(response, 404, { code: "NOT_FOUND", message: "story not found" }); }
       if (request.method === "GET" && path === "/api/runs") return json(response, 200, await controller.runs());
       if (request.method === "GET" && path.startsWith("/api/runs/") && path.endsWith("/logs")) return json(response, 200, await controller.logs(decodeURIComponent(path.split("/")[3])));
       if (request.method === "GET" && path.startsWith("/api/runs/")) return json(response, 200, await controller.run(decodeURIComponent(path.slice("/api/runs/".length))) || { code: "NOT_FOUND", message: "run not found" });

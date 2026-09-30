@@ -20,6 +20,9 @@ export interface StorySummary {
   headSha?: string;
   blockedReason?: string;
   updatedAt: string;
+  dependencyError?: string;
+  issueUrl?: string;
+  pullRequestUrl?: string;
 }
 
 export interface StoryDetail extends StorySummary {
@@ -29,6 +32,10 @@ export interface StoryDetail extends StorySummary {
   validation: string[];
   markdown: string;
   conflict?: { repositoryRevision: string; githubRevision: string; summary: string };
+  dependencyError?: string;
+  issueUrl?: string;
+  pullRequestUrl?: string;
+  syncStatus?: "IN_SYNC" | "CONFLICT" | "LOCAL_ONLY" | "GITHUB_ONLY";
 }
 
 export interface ProjectSnapshot {
