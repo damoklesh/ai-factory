@@ -1,0 +1,20 @@
+{
+  "owner": "OWNER",
+  "repo": "REPO",
+  "baseBranch": "main",
+  "runnerLabel": "ai-local",
+  "model": "",
+  "validationCommands": [],
+  "smokeCommands": [],
+  "requiredChecks": [],
+  "timeouts": {
+    "codexMinutes": 45,
+    "ciMinutes": 20,
+    "workflowMinutes": 180
+  },
+  "maxStories": 1,
+  "maxFixCycles": 3,
+  "autoMerge": false,
+  "stateFile": ".cache/state.json",
+  "logDirectory": "logs"
+}

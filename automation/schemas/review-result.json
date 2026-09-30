@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["decision", "findings", "evidence"],
+  "properties": {
+    "decision": { "enum": ["PASS", "CHANGES_REQUESTED", "NEEDS_HUMAN"] },
+    "findings": { "type": "array", "items": { "type": "string" } },
+    "evidence": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}
