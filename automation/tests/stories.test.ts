@@ -6,6 +6,9 @@ import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { evaluateRequiredChecks } from "../src/checks.js";
 import { buildPullRequestBody, replaceAgentLabel } from "../src/github.js";
 import { parseArgs } from "../src/orchestrator.js";
+import { mergeReviewedPullRequest } from "../src/merge.js";
+import { waitForRequiredChecks } from "../src/verify.js";
+import type { GitHubClient } from "../src/github.js";
 import type { Issue } from "../src/types.js";
 
 const issue = (number: number, priority: number, dependencies = "None"): Issue => ({
@@ -50,4 +53,16 @@ test("uses stable issue branches and preserves non-agent labels", () => {
   assert.deepEqual(replaceAgentLabel(["bug", "agent:ready", "agent:blocked"], "agent:running"), ["bug", "agent:running"]);
   assert.match(buildPullRequestBody(12, "agent/issue-12"), /Issue: #12/);
   assert.equal(parseArgs(["--max-stories", "2", "--auto-merge"]).autoMerge, true);
+});
+
+test("waits for current-SHA CI and blocks a changed PR head at merge", async () => {
+  let calls = 0;
+  const client = {
+    async getChecks() { calls += 1; return calls === 1 ? [{ name: "CI", status: "in_progress", conclusion: null, headSha: "new" }] : [{ name: "CI", status: "completed", conclusion: "success", headSha: "new" }]; },
+    async getPullRequest() { return { number: 12, title: "US", body: "", state: "open" as const, merged: false, headBranch: "agent/issue-12", headSha: "changed", baseBranch: "main" }; },
+    async mergePullRequest() { throw new Error("must not merge a stale SHA"); },
+  } as unknown as GitHubClient;
+  const result = await waitForRequiredChecks(client, "new", ["CI"], 1000, 0);
+  assert.equal(result.decision, "PASS");
+  await assert.rejects(() => mergeReviewedPullRequest(client, 12, "reviewed"), /stale/);
 });

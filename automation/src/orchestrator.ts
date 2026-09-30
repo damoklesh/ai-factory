@@ -6,6 +6,7 @@ import { CodexRunError, CodexRunner } from "./codex.js";
 import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubClient } from "./github.js";
 import { commitAndPush, createWorktree, gitDiff, removeWorktree, type Worktree } from "./git.js";
 import { loadState, saveState, transition, canStartFix } from "./state.js";
+import { mergeReviewedPullRequest } from "./merge.js";
 import { parseStory, selectNextStory } from "./stories.js";
 import { runValidation, validationsPassed, waitForRequiredChecks } from "./verify.js";
 import type { Issue, OrchestrationConfig, PullRequest, StoryContract, StoryState } from "./types.js";
@@ -96,7 +97,15 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, i
       transition(state, issue.number, "REVIEWING", { headSha: commit.sha });
       await saveState(stateFile, state);
       const diff = await gitDiff(worktree.path, config.baseBranch);
-      const review = await codex.reviewer(reviewPrompt(issue, contract, diff, validationText), worktree.path, config.timeouts.codexMinutes * 60_000);
+      let review;
+      try {
+        review = await codex.reviewer(reviewPrompt(issue, contract, diff, validationText), worktree.path, config.timeouts.codexMinutes * 60_000);
+      } catch (error) {
+        transition(state, issue.number, "NEEDS_HUMAN", { reason: error instanceof Error ? error.message : String(error) });
+        await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
+        await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], state.stories[String(issue.number)].reason || "Reviewer failed"));
+        return { status: "NEEDS_HUMAN", state: state.stories[String(issue.number)] };
+      }
       transition(state, issue.number, "REVIEWING", { reviewHeadSha: commit.sha });
       if (review.decision === "NEEDS_HUMAN") {
         transition(state, issue.number, "NEEDS_HUMAN", { reason: review.findings.join("; ") || "Reviewer requested human decision" });
@@ -114,13 +123,14 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, i
         await saveState(stateFile, state);
         return { status: "PR_OPEN", state: state.stories[String(issue.number)] };
       }
-      const currentPr = await client.getPullRequest(pullRequest.number);
-      if (currentPr.headSha !== commit.sha) {
-        feedback = `PR head changed from reviewed SHA ${commit.sha} to ${currentPr.headSha}; review is stale.`;
-        if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
-        continue;
+      let merged;
+      try {
+        merged = await mergeReviewedPullRequest(client, pullRequest.number, commit.sha);
+      } catch (error) {
+        transition(state, issue.number, "NEEDS_HUMAN", { reason: error instanceof Error ? error.message : String(error) });
+        await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
+        return { status: "NEEDS_HUMAN", state: state.stories[String(issue.number)] };
       }
-      const merged = await client.mergePullRequest(currentPr.number, commit.sha);
       if (!merged.merged) {
         transition(state, issue.number, "NEEDS_HUMAN", { reason: merged.message }); await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
         return { status: "NEEDS_HUMAN", state: state.stories[String(issue.number)] };
@@ -187,4 +197,3 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) runOrchestrator().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });
-
