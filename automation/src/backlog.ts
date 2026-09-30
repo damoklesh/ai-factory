@@ -105,12 +105,16 @@ function resolveDependencies(body: string, issueNumbers: Map<string, number>): s
 }
 
 function section(markdown: string, names: string[]): string {
-  const wanted = new Set(names.map((name) => name.toLowerCase()));
+  const wanted = new Set(names.map(normalizeHeading));
   const lines = markdown.split(/\r?\n/);
-  const start = lines.findIndex((line) => wanted.has(line.replace(/^#{2,}\s+/, "").trim().toLowerCase()));
+  const start = lines.findIndex((line) => wanted.has(normalizeHeading(line.replace(/^#{2,}\s+/, "").trim())));
   if (start < 0) return "";
   const end = lines.slice(start + 1).findIndex((line) => /^#{2,}\s+/.test(line));
   return lines.slice(start + 1, end < 0 ? undefined : start + 1 + end).join("\n").trim();
+}
+
+function normalizeHeading(value: string): string {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
 function splitFrontmatter(markdown: string): { frontmatter: Record<string, string>; body: string } {
