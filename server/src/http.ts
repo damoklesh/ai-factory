@@ -50,7 +50,7 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
         const root = resolve(options.uiDirectory);
         const file = resolve(root, relative);
         if (file !== root && !file.startsWith(`${root}\\`) && !file.startsWith(`${root}/`)) return json(response, 403, { code: "PERMISSION_DENIED", message: "file path is outside the UI directory" });
-        try { const content = await readFile(file); response.setHeader("Content-Type", extname(file) === ".html" ? "text/html; charset=utf-8" : "application/octet-stream"); return response.end(content); }
+        try { const content = await readFile(file); response.setHeader("Content-Type", contentType(file)); return response.end(content); }
         catch { return json(response, 404, { code: "NOT_FOUND", message: "asset not found" }); }
       }
       return json(response, 404, { code: "NOT_FOUND", message: "route not found" });
@@ -60,5 +60,16 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
 }
 
 function pathIsApi(pathname: string | undefined): boolean { return Boolean(pathname && (pathname === "/api" || pathname.startsWith("/api/"))); }
+function contentType(file: string): string {
+  switch (extname(file).toLowerCase()) {
+    case ".html": return "text/html; charset=utf-8";
+    case ".js": return "text/javascript; charset=utf-8";
+    case ".css": return "text/css; charset=utf-8";
+    case ".json": return "application/json; charset=utf-8";
+    case ".svg": return "image/svg+xml";
+    case ".ico": return "image/x-icon";
+    default: return "application/octet-stream";
+  }
+}
 function numberParam(value: string | null): number | undefined { if (!value) return undefined; const number = Number(value); return Number.isInteger(number) && number >= 0 ? number : undefined; }
 function enumParam<T extends string>(value: string | null, values: readonly T[]): T | undefined { return value && values.includes(value as T) ? value as T : undefined; }
