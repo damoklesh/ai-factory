@@ -24,7 +24,7 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
       const url = new URL(request.url || "/", origin);
       const path = url.pathname;
       if (path === "/api/events" && request.method === "GET") {
-        response.statusCode = 200; response.setHeader("Content-Type", "text/event-stream"); response.setHeader("Cache-Control", "no-cache"); response.setHeader("Connection", "keep-alive"); response.write(": connected\n\n"); const unsubscribe = controller.subscribe((event) => response.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`)); request.on("close", unsubscribe); return;
+        response.statusCode = 200; response.setHeader("Content-Type", "text/event-stream"); response.setHeader("Cache-Control", "no-cache"); response.setHeader("Connection", "keep-alive"); response.write(": connected\n\n"); const cursor = Number(request.headers["last-event-id"] || 0); for (const event of await controller.eventsSince(Number.isFinite(cursor) ? cursor : 0)) response.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`); const unsubscribe = controller.subscribe((event) => response.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`)); request.on("close", unsubscribe); return;
       }
       if (request.method !== "GET" && (!hasSession(request, session) || !mutationOriginAllowed(request, origin))) return json(response, 403, { code: "AUTH_REQUIRED", message: "valid local session and same-origin request required" });
       if (request.method === "GET" && path === "/api/project") return json(response, 200, await controller.project());

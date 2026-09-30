@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { LogEntry, RunSnapshot } from "@ai-factory/contracts";
 
@@ -27,6 +27,14 @@ export class AgentPersistence {
   async readSnapshot(runId: string): Promise<RunSnapshot | undefined> {
     try { return JSON.parse(await readFile(join(this.root, "runs", runId, "snapshot.json"), "utf8")) as RunSnapshot; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw new PersistenceError(`cannot read snapshot for ${runId}`); }
+  }
+  async listSnapshots(): Promise<RunSnapshot[]> {
+    try {
+      const runs = await readdir(join(this.root, "runs"), { withFileTypes: true });
+      const snapshots: RunSnapshot[] = [];
+      for (const run of runs.filter((entry) => entry.isDirectory())) { const snapshot = await this.readSnapshot(run.name); if (snapshot) snapshots.push(snapshot); }
+      return snapshots.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw new PersistenceError("cannot list run snapshots"); }
   }
   async appendEvent(runId: string, event: LogEntry): Promise<void> {
     await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "events.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(event)}\n`, "utf8"); });
