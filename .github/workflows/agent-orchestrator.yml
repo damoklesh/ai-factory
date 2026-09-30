@@ -42,4 +42,8 @@ jobs:
           AI_FACTORY_AUTO_MERGE: ${{ inputs.auto_merge }}
         run: |
           npm ci
-          npm run orchestrate -- --max-stories "$AI_FACTORY_MAX_STORIES"
+          if [ "$AI_FACTORY_AUTO_MERGE" = "true" ]; then
+            npm run orchestrate -- --max-stories "$AI_FACTORY_MAX_STORIES" --auto-merge
+          else
+            npm run orchestrate -- --max-stories "$AI_FACTORY_MAX_STORIES"
+          fi
