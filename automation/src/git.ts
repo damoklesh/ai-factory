@@ -41,7 +41,8 @@ export async function createWorktree(repoRoot: string, baseRef: string, branch: 
     // The user's normal checkout usually has baseRef checked out already. A detached
     // worktree avoids trying to check out the same branch twice.
     const result = await runProcess("git", ["worktree", "add", "--detach", path, baseRef], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
-    if (result.code !== 0) throw new Error(`git worktree add failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    const remoteBase = result.code === 0 ? result : await runProcess("git", ["worktree", "add", "--detach", path, `origin/${baseRef}`], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
+    if (remoteBase.code !== 0) throw new Error(`git worktree add failed: ${remoteBase.stderr.trim() || remoteBase.stdout.trim()}`);
     const branchResult = await runProcess("git", ["switch", "-c", branch], { cwd: path, timeoutMs: 120_000 });
     if (branchResult.code !== 0) throw new Error(`git switch failed: ${branchResult.stderr.trim() || branchResult.stdout.trim()}`);
     return { path, branch };
@@ -82,7 +83,7 @@ export async function ensureTargetRepository(config: OrchestrationConfig, contro
   } else {
     await mkdir(join(path, ".."), { recursive: true });
     const result = await runProcess("git", ["clone", remoteUrl, path], { cwd: controlRoot, timeoutMs: 120_000, env });
-    if (result.code !== 0) throw new Error(`git clone failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    if (result.code !== 0) throw new Error(`git clone failed: ${result.stderr.trim() || result.stdout.trim()} Check that AGENT_GH_TOKEN is valid and has access to ${config.targetRepository}.`);
   }
   await git(path, ["fetch", "origin", config.targetBranch], 120_000, { env });
   return { path, env };
