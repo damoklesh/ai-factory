@@ -1,0 +1,48 @@
+name: Agent story
+description: A small, testable story for the AI Factory
+title: "US: "
+labels: ["agent:ready"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep one independently verifiable change per issue.
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: "As a user I want ... so that ..."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: One observable criterion per line, prefixed with a dash.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+    validations:
+      required: true
+  - type: input
+    id: dependencies
+    attributes:
+      label: Dependencies
+      placeholder: "None or #12, #15"
+    validations:
+      required: true
+  - type: input
+    id: priority
+    attributes:
+      label: Priority
+      placeholder: "1"
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      description: Commands or concrete scenarios; one per line.

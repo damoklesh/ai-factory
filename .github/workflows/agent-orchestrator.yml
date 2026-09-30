@@ -1,0 +1,45 @@
+name: AI Factory
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_stories:
+        description: Maximum stories for this run
+        required: true
+        default: "1"
+      auto_merge:
+        description: Enable merge only after all configured gates pass
+        required: true
+        type: boolean
+        default: false
+
+concurrency:
+  group: ai-factory-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  orchestrate:
+    runs-on: [self-hosted, linux, ai-local]
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      checks: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install and run
+        working-directory: automation
+        env:
+          AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+          AI_FACTORY_MAX_STORIES: ${{ inputs.max_stories }}
+          AI_FACTORY_AUTO_MERGE: ${{ inputs.auto_merge }}
+        run: |
+          npm ci
+          npm run orchestrate -- --max-stories "$AI_FACTORY_MAX_STORIES"

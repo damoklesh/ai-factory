@@ -1,0 +1,8 @@
+node_modules/
+automation/dist/
+automation/.cache/
+automation/logs/
+automation/config.json
+*.local.json
+.DS_Store
+
