@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { OrchestrationConfig } from "./types.js";
 
 const defaults: Omit<OrchestrationConfig, "owner" | "repo"> = {
+  targetRepository: "",
+  targetBranch: "main",
+  targetBacklogPath: "backlog",
   baseBranch: "main",
   runnerLabel: "ai-local",
   validationCommands: [],
@@ -23,12 +26,18 @@ function positiveNumber(value: unknown, name: string): number {
 
 export function loadConfig(filePath = process.env.AI_FACTORY_CONFIG || "config.json"): OrchestrationConfig {
   const source = JSON.parse(readFileSync(resolve(filePath), "utf8")) as Partial<OrchestrationConfig>;
-  if (!source.owner || !source.repo) throw new Error("config requires owner and repo");
+  const targetRepository = source.targetRepository || (source.owner && source.repo ? `${source.owner}/${source.repo}` : "");
+  if (!targetRepository || !/^\S+\/\S+$/.test(targetRepository)) throw new Error("config requires targetRepository in owner/repo format");
+  const [owner, repo] = targetRepository.split("/", 2);
   const config: OrchestrationConfig = {
     ...defaults,
     ...source,
-    owner: source.owner,
-    repo: source.repo,
+    owner,
+    repo,
+    targetRepository,
+    targetBranch: source.targetBranch || source.baseBranch || defaults.targetBranch,
+    targetBacklogPath: source.targetBacklogPath || defaults.targetBacklogPath,
+    baseBranch: source.targetBranch || source.baseBranch || defaults.baseBranch,
     timeouts: { ...defaults.timeouts, ...source.timeouts },
   };
   if (config.autoMerge !== false && config.autoMerge !== true) throw new Error("autoMerge must be boolean");
@@ -38,4 +47,8 @@ export function loadConfig(filePath = process.env.AI_FACTORY_CONFIG || "config.j
   positiveNumber(config.timeouts.ciMinutes, "timeouts.ciMinutes");
   positiveNumber(config.timeouts.workflowMinutes, "timeouts.workflowMinutes");
   return config;
+}
+
+export function targetWorkspacePath(config: OrchestrationConfig, controlRoot: string): string {
+  return resolve(process.cwd(), config.targetWorkspace || join("..", "workspaces", config.repo));
 }

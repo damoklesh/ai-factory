@@ -57,6 +57,11 @@ export interface OrchestrationConfig {
   owner: string;
   repo: string;
   baseBranch: string;
+  controlRepository?: string;
+  targetRepository: string;
+  targetBranch: string;
+  targetBacklogPath: string;
+  targetWorkspace?: string;
   runnerLabel: string;
   model?: string;
   validationCommands: string[];
@@ -96,4 +101,3 @@ export interface CodexExecution {
   errorOutput: string;
   result?: unknown;
 }
-
