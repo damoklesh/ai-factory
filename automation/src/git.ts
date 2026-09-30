@@ -59,7 +59,7 @@ export async function removeWorktree(repoRoot: string, worktree: Worktree, optio
 
 export function gitAuthEnv(token?: string): NodeJS.ProcessEnv | undefined {
   if (!token) return undefined;
-  return { ...process.env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader", GIT_CONFIG_VALUE_0: `AUTHORIZATION: bearer ${token}` };
+  return { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader", GIT_CONFIG_VALUE_0: `AUTHORIZATION: bearer ${token}` };
 }
 
 export async function ensureTargetRepository(config: OrchestrationConfig, controlRoot: string, token?: string): Promise<{ path: string; env?: NodeJS.ProcessEnv }> {
