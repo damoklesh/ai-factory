@@ -23,6 +23,9 @@ export interface StorySummary {
   dependencyError?: string;
   issueUrl?: string;
   pullRequestUrl?: string;
+  validatedHeadSha?: string;
+  externalStatus?: "OPEN" | "CLOSED" | "MERGED" | "UNKNOWN";
+  externalStale?: boolean;
 }
 
 export interface StoryDetail extends StorySummary {
@@ -36,7 +39,13 @@ export interface StoryDetail extends StorySummary {
   issueUrl?: string;
   pullRequestUrl?: string;
   syncStatus?: "IN_SYNC" | "CONFLICT" | "LOCAL_ONLY" | "GITHUB_ONLY";
+  validatedHeadSha?: string;
+  externalStatus?: "OPEN" | "CLOSED" | "MERGED" | "UNKNOWN";
+  externalStale?: boolean;
 }
+
+export interface GithubObservation { storyId: string; pullRequestNumber?: number; headSha?: string; validatedHeadSha?: string; state: "OPEN" | "CLOSED" | "MERGED"; checks: "PASS" | "FAIL" | "PENDING" | "UNKNOWN"; checkedAt: string; }
+export interface SyncResult { connected: boolean; stale: boolean; syncedAt?: string; message: string; changedStoryIds: string[]; }
 
 export interface ProjectSnapshot {
   schemaVersion: number;

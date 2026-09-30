@@ -36,11 +36,12 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
       if (request.method === "GET" && path.startsWith("/api/runs/")) return json(response, 200, await controller.run(decodeURIComponent(path.slice("/api/runs/".length))) || { code: "NOT_FOUND", message: "run not found" });
       if (request.method === "GET" && path === "/api/approvals") return json(response, 200, await controller.approvals());
       if (request.method === "GET" && path === "/api/config") return json(response, 200, await controller.configView());
+      if (request.method === "GET" && path === "/api/history") return json(response, 200, await controller.history());
       if (request.method === "POST" && path === "/api/runs") return json(response, 201, await controller.start(parseStartRunRequest(await body(request))));
       const runAction = path.match(/^\/api\/runs\/([^/]+)\/(pause|stop|resume)$/);
       if (request.method === "POST" && runAction) return json(response, 200, await controller.control(decodeURIComponent(runAction[1]), runAction[2] as "pause" | "stop" | "resume"));
       if (request.method === "POST" && path.startsWith("/api/runs/") && path.endsWith("/instructions")) { const instruction = parseInstructionRequest(await body(request)); return json(response, 202, await controller.addInstruction(decodeURIComponent(path.split("/")[3]), instruction)); }
-      if (request.method === "POST" && path === "/api/sync") return json(response, 200, { accepted: true, syncedAt: new Date().toISOString() });
+      if (request.method === "POST" && path === "/api/sync") return json(response, 200, await controller.sync());
       if (request.method === "POST" && path.startsWith("/api/approvals/") && path.endsWith("/decision")) { const decision = parseDecisionRequest(await body(request)); return json(response, 200, await controller.decideApproval(decodeURIComponent(path.split("/")[3]), decision)); }
       if (request.method === "PUT" && path.startsWith("/api/stories/") && path.endsWith("/spec")) return json(response, 200, await controller.updateStorySpec(decodeURIComponent(path.split("/")[3]), parseSpecUpdateRequest(await body(request))));
       if (request.method === "PUT" && path === "/api/config") return json(response, 200, await controller.updateConfig(parseConfigUpdateRequest(await body(request))));

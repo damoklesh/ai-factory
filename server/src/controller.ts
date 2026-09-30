@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import type { ApprovalRequest, AppConfigView, ConfigUpdateRequest, DecisionRequest, DecisionResult, Diagnostic, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StorySummary } from "@ai-factory/contracts";
+import type { ApprovalRequest, AppConfigView, ConfigUpdateRequest, DecisionRequest, DecisionResult, Diagnostic, GithubObservation, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StorySummary, SyncResult } from "@ai-factory/contracts";
 import { SCHEMA_VERSION } from "@ai-factory/contracts";
 import { AgentPersistence } from "./persistence.js";
 import { loadRepositoryStories } from "./stories.js";
@@ -20,8 +20,10 @@ export class LocalController {
   private runsLoaded = false;
   private config: AppConfigView = { owner: "OWNER", repo: "REPO", baseBranch: "main", validationCommands: [], requiredChecks: [], maxStories: 1, maxFixCycles: 3, autoMerge: false, stateFile: ".agent/state.json", developerPrompt: "Keep changes small and focused.", reviewerPrompt: "Review the current commit and report evidence." };
   private configRevision = "local-config-v1";
+  private lastSyncAt?: string;
+  private syncStale = true;
   private readonly configUpdates = new Map<string, { revision: string; config: AppConfigView; diff: string }>();
-  constructor(private readonly persistence = new AgentPersistence(), private readonly options: { codexAvailable?: boolean; githubConnected?: boolean; backlogRoot?: string; approvals?: ApprovalRequest[]; configPath?: string } = {}) { this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
+  constructor(private readonly persistence = new AgentPersistence(), private readonly options: { codexAvailable?: boolean; githubConnected?: boolean; githubObservations?: GithubObservation[]; backlogRoot?: string; approvals?: ApprovalRequest[]; configPath?: string } = {}) { this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
 
   async project(): Promise<ProjectSnapshot> {
     await this.ensureStories();
@@ -34,12 +36,12 @@ export class LocalController {
     const githubConnected = this.options.githubConnected === true;
     const codexAvailable = this.options.codexAvailable !== false;
     const live = this.activeRun && ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(this.activeRun.status) ? this.activeRun : undefined;
-    return { schemaVersion: SCHEMA_VERSION, repository: { owner: this.config.owner, repo: this.config.repo, baseBranch: this.config.baseBranch }, controller: { available: true, version: "ui-v1" }, github: { connected: githubConnected, stale: !githubConnected, message: githubConnected ? undefined : "No GitHub adapter configured" }, codex: { available: codexAvailable, message: codexAvailable ? undefined : "Codex executable is not available" }, activeRunId: live?.runId, counts: { total: this.stories.length, done: this.stories.filter((story) => story.deliveryStatus === "MERGED").length, blocked: this.stories.filter((story) => Boolean(story.blockedReason)).length, active: live ? 1 : 0 }, diagnostics };
+    return { schemaVersion: SCHEMA_VERSION, repository: { owner: this.config.owner, repo: this.config.repo, baseBranch: this.config.baseBranch }, controller: { available: true, version: "ui-v1" }, github: { connected: githubConnected, checkedAt: this.lastSyncAt, stale: this.syncStale, message: githubConnected ? undefined : "No GitHub adapter configured" }, codex: { available: codexAvailable, message: codexAvailable ? undefined : "Codex executable is not available" }, activeRunId: live?.runId, counts: { total: this.stories.length, done: this.stories.filter((story) => story.deliveryStatus === "MERGED").length, blocked: this.stories.filter((story) => Boolean(story.blockedReason)).length, active: live ? 1 : 0 }, lastSyncAt: this.lastSyncAt, diagnostics };
   }
   async listStories(query?: { search?: string; status?: string }): Promise<StorySummary[]> {
     await this.ensureStories();
     const search = query?.search?.trim().toLowerCase();
-    return this.stories.filter((story) => !search || `${story.storyId} ${story.title} ${story.objective}`.toLowerCase().includes(search)).filter((story) => !query?.status || query.status === "all" || statusFor(story) === query.status).map((story) => ({ storyId: story.storyId, title: story.title, priority: story.priority, dependencies: story.dependencies, deliveryStatus: story.deliveryStatus, executionStatus: story.executionStatus, validationStatus: story.validationStatus, specSource: story.specSource, specRevision: story.specRevision, githubIssueNumber: story.githubIssueNumber, pullRequestNumber: story.pullRequestNumber, headSha: story.headSha, blockedReason: story.blockedReason, dependencyError: story.dependencyError, issueUrl: issueUrl(this.config, story.githubIssueNumber), pullRequestUrl: pullRequestUrl(this.config, story.pullRequestNumber), updatedAt: story.updatedAt }));
+    return this.stories.filter((story) => !search || `${story.storyId} ${story.title} ${story.objective}`.toLowerCase().includes(search)).filter((story) => !query?.status || query.status === "all" || statusFor(story) === query.status).map((story) => ({ storyId: story.storyId, title: story.title, priority: story.priority, dependencies: story.dependencies, deliveryStatus: story.deliveryStatus, executionStatus: story.executionStatus, validationStatus: story.validationStatus, specSource: story.specSource, specRevision: story.specRevision, githubIssueNumber: story.githubIssueNumber, pullRequestNumber: story.pullRequestNumber, headSha: story.headSha, validatedHeadSha: story.validatedHeadSha, externalStatus: story.externalStatus, externalStale: story.externalStale, blockedReason: story.blockedReason, dependencyError: story.dependencyError, issueUrl: issueUrl(this.config, story.githubIssueNumber), pullRequestUrl: pullRequestUrl(this.config, story.pullRequestNumber), updatedAt: story.updatedAt }));
   }
   async story(storyId: string): Promise<StoryDetail | undefined> { await this.ensureStories(); const story = this.stories.find((item) => item.storyId === storyId); return story ? { ...story, issueUrl: issueUrl(this.config, story.githubIssueNumber), pullRequestUrl: pullRequestUrl(this.config, story.pullRequestNumber) } : undefined; }
   async runs(): Promise<RunSnapshot[]> { await this.ensureRuns(); return this.runHistory; }
@@ -85,6 +87,21 @@ export class LocalController {
     const path = resolve(this.options.configPath || "automation/config.json"); await mkdir(dirname(path), { recursive: true }); const temp = `${path}.${process.pid}.tmp`; await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, "utf8"); await rename(temp, path);
     this.config = next; this.configRevision = createHash("sha256").update(JSON.stringify(next)).digest("hex").slice(0, 12); const result = { revision: this.configRevision, config: { ...this.config }, diff }; this.configUpdates.set(request.idempotencyKey, result); return result;
   }
+  async sync(): Promise<SyncResult> {
+    await this.ensureStories();
+    if (this.options.githubConnected !== true) { this.syncStale = true; return { connected: false, stale: true, message: "GitHub unavailable; remote facts were not changed", changedStoryIds: [] }; }
+    const observations = this.options.githubObservations || []; const changedStoryIds: string[] = [];
+    this.stories = this.stories.map((story) => {
+      const observation = observations.find((item) => item.storyId === story.storyId); if (!observation) return story;
+      const changed = observation.headSha !== story.headSha || observation.state !== story.externalStatus || observation.checks === "FAIL";
+      if (changed) changedStoryIds.push(story.storyId);
+      const pushed = Boolean(story.headSha && observation.headSha && story.headSha !== observation.headSha);
+      const validationStatus = pushed ? "STALE" : observation.checks === "PASS" && observation.headSha && observation.validatedHeadSha === observation.headSha ? "PASS" : observation.checks === "FAIL" ? "FAIL" : observation.checks === "PENDING" ? "PENDING" : "UNKNOWN";
+      return { ...story, pullRequestNumber: observation.pullRequestNumber || story.pullRequestNumber, headSha: observation.headSha || story.headSha, validatedHeadSha: observation.validatedHeadSha, externalStatus: observation.state, externalStale: false, validationStatus, deliveryStatus: observation.state === "MERGED" ? "MERGED" : story.deliveryStatus === "MERGED" ? "MERGED" : observation.pullRequestNumber ? "PR_OPEN" : story.deliveryStatus, updatedAt: observation.checkedAt };
+    });
+    this.lastSyncAt = new Date().toISOString(); this.syncStale = false; return { connected: true, stale: false, syncedAt: this.lastSyncAt, message: changedStoryIds.length ? `Reconciled ${changedStoryIds.length} story(ies)` : "Remote state is already current", changedStoryIds };
+  }
+  async history(): Promise<Array<{ runId: string; timestamp: string; message: string; phase: string }>> { await this.ensureRuns(); const entries: Array<{ runId: string; timestamp: string; message: string; phase: string }> = []; for (const run of this.runHistory) for (const event of await this.persistence.readEvents(run.runId)) entries.push({ runId: run.runId, timestamp: event.timestamp, message: event.message, phase: event.phase }); return entries.sort((left, right) => right.timestamp.localeCompare(left.timestamp)); }
   async configView(): Promise<AppConfigView & { revision: string }> { return { ...this.config, revision: this.configRevision }; }
   subscribe(listener: Listener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   async start(request: StartRunRequest): Promise<RunSnapshot> {
