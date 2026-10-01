@@ -1,5 +1,44 @@
 # Architecture and user-story gap analysis
 
+## 2026-10-01 implementation baseline
+
+[`AI_Factory_Architecture_and_Roadmap.md`](../AI_Factory_Architecture_and_Roadmap.md)
+is the accepted architecture baseline for the next iteration. Architecture,
+controller, validation, CI, and merge-policy changes remain subject to human
+review. Local implementation commits do not imply approval, push, or merge.
+
+The proposal was written from `master` at
+`4a82311136602e475b036c0f7d2b4d697d0675eb`, while the inspected checkout is
+`main` at `99965f0034c5a50a705f02f3b353e0b8312e99ee`. The current branch already
+contains a React UI, local Node API, durable run data, human decision/spec-edit
+contracts, GitHub observation, and a separate CLI orchestrator. Therefore the
+roadmap is an incremental convergence plan, not authorization to replace those
+pieces.
+
+Confirmed implementation constraints:
+
+- The local UI/API is the V1 control plane; the Actions workflow remains a CI
+  or explicitly selected legacy entry point, never a concurrent controller for
+  the same target.
+- Target identity and paths must be explicit. Neither `process.cwd()` nor the
+  AI Factory checkout may silently become the target project.
+- Backlog Markdown in the selected target is canonical; GitHub Issues are an
+  idempotent collaboration mirror and external-state source.
+- Operational state belongs under ignored controller storage, outside the
+  target and story worktree.
+- A run is not `ACTIVE` before a real child process has spawned. Unknown live
+  state after restart becomes `INTERRUPTED`, not active or successful.
+- `autoMerge` remains `false` by default. No push or merge is implied by the
+  UI, and merge requires current spec revision, validated HEAD SHA, and human
+  approval.
+- Default automated tests use temporary repositories and fake GitHub/Codex
+  adapters, make no service calls, and require no credentials.
+
+Initial verification on this baseline passed both existing suites: root
+`npm test` (20 tests) and `automation/npm test` (25 tests). The sections below
+describe the older controller audit and remain as historical evidence until
+each roadmap story replaces its corresponding gap.
+
 Reviewed against [`AI_Factory_V1_Plan.md`](../AI_Factory_V1_Plan.md), the five construction user stories, the supplied Developer/Reviewer contracts, and the current TypeScript implementation.
 
 ## Implemented and aligned
