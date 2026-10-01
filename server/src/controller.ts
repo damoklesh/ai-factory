@@ -8,7 +8,7 @@ import { BACKLOG_STORY_TEMPLATE, loadBacklog } from "./stories.js";
 import { loadAppConfig, configFilePath } from "./config.js";
 import { ProjectWorkspaceStore } from "./projects.js";
 import { desiredIssue, issueRevision, previewBacklogSync, type IssueMirror, type SyncBaseline } from "./backlog-sync.js";
-import type { ExecutionHandle, ExecutionOutcome, ExecutionService } from "./execution.js";
+import type { ExecutionHandle, ExecutionOutcome, ExecutionProcessEvent, ExecutionService } from "./execution.js";
 
 type Listener = (event: LogEntry) => void;
 export interface GithubSyncAdapter { observe(stories: StoryDetail[]): Promise<GithubObservation[]>; listIssues?(): Promise<IssueMirror[]>; createIssue?(input: { title: string; body: string; labels: string[] }): Promise<IssueMirror>; updateIssue?(number: number, input: { title: string; body: string; labels: string[] }): Promise<IssueMirror>; }
@@ -39,6 +39,7 @@ export class LocalController {
   private readonly syncPreviews = new Map<string, BacklogSyncPreview>();
   private startPending = false;
   private readonly executionHandles = new Map<string, ExecutionHandle>();
+  private readonly eventQueues = new Map<string, Promise<void>>();
   private readonly configUpdates = new Map<string, { revision: string; config: AppConfigView; diff: string }>();
   constructor(private persistence = new AgentPersistence(), private readonly options: ControllerOptions = {}) { this.config = loadAppConfig(options.configPath); this.githubAdapter = options.githubAdapter; this.githubConnected = options.githubConnected === true || Boolean(options.githubAdapter); this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
 
@@ -93,7 +94,7 @@ export class LocalController {
   async runs(): Promise<RunSnapshot[]> { await this.ensureRuns(); await this.ensureStories(); await this.refreshOrchestratorState(); return [...this.externalRuns(), ...this.runHistory]; }
   async run(runId: string): Promise<RunSnapshot | undefined> { await this.ensureRuns(); return this.runHistory.find((run) => run.runId === runId) || this.persistence.readSnapshot(runId); }
   async logs(runId: string, options: { cursor?: number; limit?: number; level?: LogEntry["level"]; source?: LogEntry["source"]; search?: string } = {}): Promise<LogPage> { return this.persistence.readEventsPage(runId, options); }
-  async eventsSince(cursor = 0): Promise<LogEntry[]> { await this.ensureRuns(); const events: LogEntry[] = []; for (const run of this.runHistory) events.push(...await this.persistence.readEvents(run.runId)); return events.filter((event) => event.sequence > cursor).sort((left, right) => left.timestamp.localeCompare(right.timestamp)); }
+  async eventsSince(cursor = 0, runId?: string): Promise<LogEntry[]> { await this.ensureRuns(); const runs = runId ? this.runHistory.filter((run) => run.runId === runId) : this.runHistory; const events: LogEntry[] = []; for (const run of runs) events.push(...await this.persistence.readEvents(run.runId)); return events.filter((event) => event.sequence > cursor).sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.sequence - right.sequence); }
   async approvals(): Promise<ApprovalRequest[]> { return this.approvalItems; }
   async decideApproval(requestId: string, request: DecisionRequest): Promise<DecisionResult> {
     const previous = this.decisions.get(request.idempotencyKey); if (previous) return previous;
@@ -169,8 +170,8 @@ export class LocalController {
     catch (error) { this.startPending = false; throw error; }
     if (!this.options.executionService) { this.activeRun = { ...this.activeRun!, status: "ACTIVE", updatedAt: new Date().toISOString() }; if (story) this.markStoryActive(story, now); await this.persist("run started"); this.startPending = false; return this.activeRun; }
     try {
-      const project = this.activeProject!; const stateRoot = this.options.projectStore!.projectDataRoot(project.projectId); const handle = await this.options.executionService.start({ runId: this.activeRun!.runId, story: story!, project, controlRoot: this.options.projectStore!.controlRoot, stateRoot, configRevision: this.configRevision, config: { ...this.config } });
-      this.executionHandles.set(this.activeRun.runId, handle); this.activeRun = { ...this.activeRun, status: "ACTIVE", phase: "IMPLEMENTING", processId: handle.pid, attempts: 1, updatedAt: new Date().toISOString() }; this.markStoryActive(story!, this.activeRun.updatedAt); await this.persist("orchestrator process spawned"); const runId = this.activeRun.runId; void handle.completion.then((outcome) => this.completeExecution(runId, outcome)); return this.activeRun;
+      const project = this.activeProject!; const stateRoot = this.options.projectStore!.projectDataRoot(project.projectId); const runId = this.activeRun!.runId; const handle = await this.options.executionService.start({ runId, story: story!, project, controlRoot: this.options.projectStore!.controlRoot, stateRoot, configRevision: this.configRevision, config: { ...this.config }, onEvent: (event) => { void this.recordProcessEvent(runId, event); } });
+      this.executionHandles.set(this.activeRun.runId, handle); this.activeRun = { ...this.activeRun, status: "ACTIVE", phase: "IMPLEMENTING", activity: "RUNNING", processId: handle.pid, attempts: 1, updatedAt: new Date().toISOString() }; this.markStoryActive(story!, this.activeRun.updatedAt); await this.persist("orchestrator process spawned"); void handle.completion.then((outcome) => this.completeExecution(runId, outcome)); return this.activeRun;
     } catch (error) {
       if (error instanceof Error && error.message === "RUN_ALREADY_ACTIVE_FOR_PROJECT") { this.activeRun = undefined; throw error; }
       this.activeRun = { ...this.activeRun, status: "FAILED", phase: "FINISHED", resultSummary: sanitizeText(error instanceof Error ? error.message : String(error)), updatedAt: new Date().toISOString() }; await this.persist("orchestrator failed to spawn"); const failed = this.activeRun; this.activeRun = undefined; return failed;
@@ -186,7 +187,35 @@ export class LocalController {
     await this.persist(`run ${action} requested`);
     return this.activeRun;
   }
-  private async persist(message: string): Promise<void> { if (!this.activeRun) return; await this.persistence.writeSnapshot(this.activeRun.runId, this.activeRun); this.runHistory = [this.activeRun, ...this.runHistory.filter((run) => run.runId !== this.activeRun?.runId)]; const event: LogEntry = { schemaVersion: SCHEMA_VERSION, eventId: randomUUID(), runId: this.activeRun.runId, sequence: (await this.persistence.readEvents(this.activeRun.runId)).length + 1, timestamp: new Date().toISOString(), source: "controller", phase: this.activeRun.phase, level: "INFO", message }; await this.persistence.appendEvent(this.activeRun.runId, event); for (const listener of this.listeners) listener(event); }
+  private async persist(message: string): Promise<void> {
+    if (!this.activeRun) return;
+    const snapshot = { ...this.activeRun };
+    this.runHistory = [snapshot, ...this.runHistory.filter((run) => run.runId !== snapshot.runId)];
+    await this.enqueueEvent(snapshot.runId, snapshot, { source: "controller", phase: snapshot.phase, level: "INFO", message });
+  }
+
+  private async recordProcessEvent(runId: string, processEvent: ExecutionProcessEvent): Promise<void> {
+    const current = this.runHistory.find((run) => run.runId === runId);
+    if (!current || ["SUCCEEDED", "FAILED", "CANCELLED", "FINISHED", "INTERRUPTED"].includes(current.status)) return;
+    const snapshot: RunSnapshot = { ...current, phase: processEvent.phase, activity: processEvent.activity || current.activity || "RUNNING", updatedAt: new Date().toISOString() };
+    this.runHistory = [snapshot, ...this.runHistory.filter((run) => run.runId !== runId)];
+    if (this.activeRun?.runId === runId) this.activeRun = snapshot;
+    await this.enqueueEvent(runId, snapshot, processEvent);
+  }
+
+  private enqueueEvent(runId: string, snapshot: RunSnapshot, input: Pick<LogEntry, "source" | "phase" | "level" | "message" | "command">): Promise<void> {
+    const previous = this.eventQueues.get(runId) || Promise.resolve();
+    const next = previous.then(async () => {
+      await this.persistence.writeSnapshot(runId, snapshot);
+      const existing = await this.persistence.readEvents(runId);
+      const sequence = existing.reduce((maximum, event) => Math.max(maximum, event.sequence), 0) + 1;
+      const event: LogEntry = { schemaVersion: SCHEMA_VERSION, eventId: randomUUID(), runId, sequence, timestamp: new Date().toISOString(), ...input };
+      await this.persistence.appendEvent(runId, event);
+      for (const listener of this.listeners) listener(event);
+    });
+    this.eventQueues.set(runId, next.catch(() => undefined));
+    return next;
+  }
 
   private async ensureStories(): Promise<void> { await this.ensureProjectContext(); if (this.storiesLoaded) return; if (this.options.projectStore && !this.activeProject) { this.stories = []; this.storyDiagnostics = []; this.storiesLoaded = true; return; } const backlog = await loadBacklog(this.activeProject?.backlogPath || this.options.backlogRoot); this.stories = backlog.stories; this.storyDiagnostics = backlog.diagnostics; this.storiesLoaded = true; }
   private assertValidBacklog(): void { const first = this.storyDiagnostics.find((item) => item.severity === "ERROR"); if (first) throw new Error(`BACKLOG_INVALID: ${first.file}:${first.line} ${first.message}`); }
@@ -197,7 +226,7 @@ export class LocalController {
   private applySyncActions(preview: BacklogSyncPreview): void { this.stories = this.stories.map((story) => { const action = preview.actions.find((item) => item.storyId === story.storyId); return action ? { ...story, githubIssueNumber: action.issueNumber || story.githubIssueNumber, syncStatus: action.kind === "CONFLICT" ? "CONFLICT" : action.kind === "UNCHANGED" ? "IN_SYNC" : "LOCAL_ONLY", conflict: action.kind === "CONFLICT" ? { repositoryRevision: action.localRevision, githubRevision: action.remoteRevision || "unknown", summary: action.reason || "Local and GitHub content diverged." } : undefined } : story; }); }
   private selectRunnableStory(mode: "selected" | "auto", storyId?: string): StoryDetail | undefined { const runnable = (story: StoryDetail) => story.valid !== false && story.deliveryStatus !== "MERGED" && story.executionStatus === "IDLE" && !story.blockedReason && !story.dependencyError && story.dependencies.every((dependency) => this.stories.find((item) => item.storyId === dependency)?.deliveryStatus === "MERGED"); if (mode === "selected") { const selected = this.stories.find((item) => item.storyId === storyId); if (!selected) throw new Error("STORY_NOT_FOUND"); if (!runnable(selected)) throw new Error(`STORY_NOT_RUNNABLE: ${selected.dependencyError || selected.blockedReason || "dependencies are not merged or the story is already active/completed"}`); return selected; } return [...this.stories].filter(runnable).sort((left, right) => left.priority - right.priority || left.storyId.localeCompare(right.storyId, "en") || (left.sourceFile || "").localeCompare(right.sourceFile || "", "en"))[0]; }
   private markStoryActive(story: StoryDetail, updatedAt: string): void { this.stories = this.stories.map((item) => item.storyId === story.storyId ? { ...item, executionStatus: "ACTIVE", deliveryStatus: "IMPLEMENTING", branch: story.githubIssueNumber ? `agent/issue-${story.githubIssueNumber}` : item.branch, updatedAt } : item); }
-  private async completeExecution(runId: string, outcome: ExecutionOutcome): Promise<void> { const run = this.runHistory.find((item) => item.runId === runId); if (!run) return; const finished = { ...run, status: outcome.status, phase: "FINISHED" as const, resultSummary: sanitizeText(outcome.summary), updatedAt: new Date().toISOString() }; this.activeRun = finished; this.runHistory = [finished, ...this.runHistory.filter((item) => item.runId !== runId)]; this.stories = this.stories.map((story) => story.storyId === run.storyId ? { ...story, executionStatus: outcome.status === "BLOCKED" ? "BLOCKED" : "FINISHED", deliveryStatus: outcome.status === "SUCCEEDED" ? "PR_OPEN" : story.deliveryStatus, blockedReason: outcome.status === "BLOCKED" || outcome.status === "FAILED" ? finished.resultSummary : story.blockedReason, updatedAt: finished.updatedAt } : story); await this.persist(`orchestrator ${outcome.status.toLowerCase()}`); this.executionHandles.delete(runId); if (this.activeRun?.runId === runId) this.activeRun = undefined; }
+  private async completeExecution(runId: string, outcome: ExecutionOutcome): Promise<void> { await this.eventQueues.get(runId); const run = this.runHistory.find((item) => item.runId === runId); if (!run) return; const finished = { ...run, status: outcome.status, phase: "FINISHED" as const, activity: "IDLE" as const, resultSummary: sanitizeText(outcome.summary), updatedAt: new Date().toISOString() }; this.activeRun = finished; this.runHistory = [finished, ...this.runHistory.filter((item) => item.runId !== runId)]; this.stories = this.stories.map((story) => story.storyId === run.storyId ? { ...story, executionStatus: outcome.status === "BLOCKED" ? "BLOCKED" : "FINISHED", deliveryStatus: outcome.status === "SUCCEEDED" ? "PR_OPEN" : story.deliveryStatus, blockedReason: outcome.status === "BLOCKED" || outcome.status === "FAILED" ? finished.resultSummary : story.blockedReason, updatedAt: finished.updatedAt } : story); await this.persist(`orchestrator ${outcome.status.toLowerCase()}: ${finished.resultSummary}`); this.executionHandles.delete(runId); if (this.activeRun?.runId === runId) this.activeRun = undefined; }
   private async refreshOrchestratorState(): Promise<void> {
     if (!this.options.orchestratorStatePath) return;
     let parsed: OrchestratorState;
@@ -221,8 +250,8 @@ export class LocalController {
     this.runHistory = await this.persistence.listSnapshots();
     const interrupted = this.runHistory.filter((run) => ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(run.status));
     for (const run of interrupted) {
-      const recovered = { ...run, status: "INTERRUPTED" as const, interruptionReason: "backend restarted before the run completed", updatedAt: new Date().toISOString() };
-      await this.persistence.writeSnapshot(recovered.runId, recovered);
+      const recovered = { ...run, status: "INTERRUPTED" as const, activity: "IDLE" as const, interruptionReason: "backend restarted before the run completed", updatedAt: new Date().toISOString() };
+      await this.enqueueEvent(recovered.runId, recovered, { source: "controller", phase: recovered.phase, level: "WARN", message: recovered.interruptionReason });
       this.runHistory = this.runHistory.map((item) => item.runId === recovered.runId ? recovered : item);
     }
     this.runsLoaded = true;

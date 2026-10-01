@@ -3,7 +3,7 @@ export const SCHEMA_VERSION = 1;
 export type DeliveryStatus = "NOT_STARTED" | "IMPLEMENTING" | "PR_OPEN" | "MERGED";
 export type ExecutionStatus = "IDLE" | "ACTIVE" | "PAUSE_REQUESTED" | "PAUSED" | "STOP_REQUESTED" | "STOPPED" | "FINISHED" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED" | "BLOCKED";
 export type ValidationStatus = "PENDING" | "PASS" | "FAIL" | "UNKNOWN" | "STALE";
-export type RunPhase = "SELECTING" | "IMPLEMENTING" | "TESTING" | "CI" | "REVIEWING" | "FIXING" | "MERGING" | "PAUSED" | "STOPPED" | "FINISHED";
+export type RunPhase = "SELECTING" | "IMPLEMENTING" | "TESTING" | "CI" | "REVIEWING" | "FIXING" | "MERGING" | "WAITING" | "PAUSED" | "STOPPED" | "FINISHED";
 
 export interface StoryDiagnostic {
   severity: "ERROR" | "WARNING";
@@ -115,7 +115,7 @@ export interface LogEntry {
   runId: string;
   sequence: number;
   timestamp: string;
-  source: "controller" | "developer" | "reviewer" | "git" | "github" | "validation";
+  source: "controller" | "orchestrator" | "developer" | "reviewer" | "git" | "github" | "validation";
   phase: RunPhase;
   level: "INFO" | "WARN" | "ERROR";
   message: string;
@@ -150,6 +150,7 @@ export interface RunSnapshot {
   targetProjectId?: string;
   processId?: number;
   resultSummary?: string;
+  activity?: "IDLE" | "RUNNING" | "WAITING_FOR_INPUT" | "WAITING_FOR_CHECKS";
 }
 
 export interface ApprovalRequest {

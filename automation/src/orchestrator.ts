@@ -14,6 +14,10 @@ import type { Issue, OrchestrationConfig, PullRequest, StoryContract, StoryState
 
 export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; storyId?: string; runId?: string; storyContractPath?: string; }
 
+function emitOperationalEvent(input: { source: "orchestrator" | "developer" | "reviewer" | "git" | "github" | "validation"; phase: string; message: string; level?: "INFO" | "WARN" | "ERROR"; command?: string; activity?: "RUNNING" | "WAITING_FOR_INPUT" | "WAITING_FOR_CHECKS"; outcome?: string }): void {
+  console.log(JSON.stringify({ aiFactoryEvent: true, level: "INFO", activity: "RUNNING", ...input }));
+}
+
 export function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = { configPath: process.env.AI_FACTORY_CONFIG || "config.json", dryRun: false, mock: false, syncBacklog: false };
   for (let index = 0; index < args.length; index += 1) {
@@ -51,6 +55,7 @@ async function mark(client: GitHubClient, issue: Issue, status: "agent:running" 
 }
 
 async function processStory(client: GitHubClient, config: OrchestrationConfig, target: { path: string; controlRoot: string; env?: NodeJS.ProcessEnv }, issue: Issue, contract: StoryContract, stateFile: string): Promise<StoryStatusResult> {
+  emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Preparing isolated worktree for issue #${issue.number}` });
   const state = await loadState(stateFile);
   const branch = `agent/issue-${issue.number}`;
   const root = target.path;
@@ -69,6 +74,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined });
       await saveState(stateFile, state);
       try {
+        emitOperationalEvent({ source: "developer", phase: cycle === 0 ? "IMPLEMENTING" : "FIXING", message: `Developer agent started for issue #${issue.number}, cycle ${cycle}` });
         await codex.developer(storyPrompt(issue, contract, feedback), worktree.path, config.timeouts.codexMinutes * 60_000);
       } catch (error) {
         const kind = error instanceof CodexRunError ? error.kind : "FAILED";
@@ -79,6 +85,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], state.stories[String(issue.number)].reason || "Codex failed"));
         return { status, state: state.stories[String(issue.number)] };
       }
+      emitOperationalEvent({ source: "validation", phase: "TESTING", message: `Running ${config.validationCommands.length} local validation command(s)`, command: config.validationCommands.join(" && ") });
       const validation = await runValidation(config.validationCommands, worktree.path, config.timeouts.workflowMinutes * 60_000);
       const validationText = validation.map((item) => `${item.passed ? "PASS" : "FAIL"} ${item.command}\n${item.output}`).join("\n");
       if (!validationsPassed(validation)) {
@@ -88,10 +95,12 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         continue;
       }
+      emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Creating reviewed commit on ${branch}` });
       const commit = await commitAndPush(worktree.path, branch, `feat: implement US #${issue.number}`, { env: target.env });
       if (!pullRequest) pullRequest = await client.createPullRequest({ title: issue.title, body: buildPullRequestBody(issue.number, branch), headBranch: branch, baseBranch: config.baseBranch });
       transition(state, issue.number, "PR_OPEN", { pullRequestNumber: pullRequest.number, headSha: commit.sha, branch, fixCycles: cycle });
       await saveState(stateFile, state);
+      emitOperationalEvent({ source: "github", phase: "CI", message: `Waiting for required checks on ${commit.sha.slice(0, 12)}`, activity: "WAITING_FOR_CHECKS" });
       const checks = await waitForRequiredChecks(client, commit.sha, config.requiredChecks, config.timeouts.ciMinutes * 60_000);
       if (checks.decision === "FAIL") {
         feedback = `Required CI checks failed or timed out for SHA ${commit.sha}.`;
@@ -103,6 +112,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       }
       transition(state, issue.number, "REVIEWING", { headSha: commit.sha });
       await saveState(stateFile, state);
+      emitOperationalEvent({ source: "reviewer", phase: "REVIEWING", message: `Reviewer agent started for issue #${issue.number}` });
       const diff = await gitDiff(worktree.path, config.baseBranch);
       let review;
       try {
@@ -209,6 +219,7 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
     const selection = options.storyId ? selectExplicitStory(issues, completed, options.storyId, explicitContract) : selectNextStory(issues, completed);
     if (!selection) { console.log("No eligible agent:ready story found."); break; }
     const result = await processStory(client, effectiveConfig, { ...target, controlRoot }, selection.issue, selection.contract, stateFile);
+    emitOperationalEvent({ source: "orchestrator", phase: result.status === "PR_OPEN" || result.status === "DONE" ? "FINISHED" : "WAITING", message: `${result.status} #${selection.issue.number}${result.state.reason ? `: ${result.state.reason}` : ""}`, level: result.status === "FAILED_INFRA" ? "ERROR" : result.status === "PR_OPEN" || result.status === "DONE" ? "INFO" : "WARN", activity: result.status === "PR_OPEN" || result.status === "DONE" ? "RUNNING" : "WAITING_FOR_INPUT", outcome: result.status });
     console.log(`${result.status} #${selection.issue.number}${result.state.reason ? `: ${result.state.reason}` : ""}`);
     if (result.status === "DONE") completed.add(selection.issue.number); else break;
   }
