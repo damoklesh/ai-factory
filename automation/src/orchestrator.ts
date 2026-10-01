@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { loadConfig, resolveModelId } from "./config.js";
 import { CodexRunError, CodexRunner } from "./codex.js";
 import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubClient } from "./github.js";
-import { commitAndPush, createWorktree, gitDiff, gitRoot, removeWorktree, ensureTargetRepository, type Worktree } from "./git.js";
+import { commitAndPush, createWorktree, gitDiff, gitRoot, gitStatus, removeWorktree, ensureTargetRepository, type Worktree } from "./git.js";
 import { backlogPath, storyIssueId, syncBacklog } from "./backlog.js";
 import { loadState, saveState, transition, canStartFix, nextFixCycle } from "./state.js";
 import { evaluateMergeGate, mergeReviewedPullRequest } from "./merge.js";
@@ -39,8 +39,8 @@ export function parseArgs(args: string[]): CliOptions {
   return options;
 }
 
-function storyPrompt(issue: Issue, contract: StoryContract, feedback = "", instructions: string[] = [], attemptId = "implement-0"): string {
-  return [`Implement GitHub Issue #${issue.number}: ${issue.title}`, `Attempt: ${attemptId}`, `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Scope: ${contract.scope}`, `Validation: ${contract.validation.join("; ") || "use configured validation commands"}`, feedback ? `Feedback from the previous gate (only unresolved findings for the prior SHA):\n${feedback}` : "", instructions.length ? `Additional human instructions for this invocation:\n${instructions.map((item) => `- ${item}`).join("\n")}` : "", "Work only in the current worktree. Do not change controller policy, CI protections, or credentials. Do not declare review clean or merge. End with the required JSON result."].filter(Boolean).join("\n");
+function storyPrompt(issue: Issue, contract: StoryContract, feedback = "", instructions: string[] = [], attemptId = "implement-0", resuming = false): string {
+  return [`Implement GitHub Issue #${issue.number}: ${issue.title}`, `Attempt: ${attemptId}`, resuming ? "Resume the existing implementation in this worktree. Inspect and preserve valid work already present; continue from the current state instead of recreating the project." : "Start the implementation in the current worktree.", `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Scope: ${contract.scope}`, `Validation: ${contract.validation.join("; ") || "use configured validation commands"}`, feedback ? `Feedback from the previous gate (only unresolved findings for the prior SHA):\n${feedback}` : "", instructions.length ? `Additional human instructions for this invocation:\n${instructions.map((item) => `- ${item}`).join("\n")}` : "", "Work only in the current worktree. Do not change controller policy, CI protections, or credentials. Do not declare review clean or merge. End with the required JSON result."].filter(Boolean).join("\n");
 }
 
 function reviewPrompt(issue: Issue, contract: StoryContract, diff: string, validationOutput: string, snapshot: { storyId: string; runId: string; pullRequest: number; sha: string }): string {
@@ -78,6 +78,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   await mark(client, issue, "agent:running");
   try {
     worktree = await createWorktree(root, config.targetBranch, branch, { env: target.env });
+    if (worktree.reused) emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Resuming existing worktree for ${branch}` });
     const codex = new CodexRunner(target.controlRoot, { model: resolveModelId(config.modelVersion, config.developerModel), reasoning: config.developerReasoning }, { model: resolveModelId(config.modelVersion, config.reviewerModel), reasoning: config.reviewerReasoning });
     while (cycle <= config.maxFixCycles) {
       const attemptId = `${config.runId || "cli"}:${issue.number}:${cycle === 0 && !pullRequest && implementationAttempt === 0 ? "implement" : "fix"}-${cycle}-${implementationAttempt}`;
@@ -88,7 +89,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         emitOperationalEvent({ source: "developer", phase: cycle === 0 ? "IMPLEMENTING" : "FIXING", message: `Developer agent started for issue #${issue.number}, cycle ${cycle}${instructions.length ? ` with ${instructions.length} human instruction(s)` : ""}` });
         transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { processStatus: "RUNNING", fixerStatus: cycle === 0 ? undefined : "RUNNING", reason: feedback || undefined });
         await saveState(stateFile, state);
-        await codex.developer(storyPrompt(issue, contract, feedback, instructions, attemptId), worktree.path, config.timeouts.codexMinutes * 60_000);
+        await codex.developer(storyPrompt(issue, contract, feedback, instructions, attemptId, worktree.reused), worktree.path, config.timeouts.codexMinutes * 60_000);
         transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { processStatus: "SUCCEEDED", fixerStatus: cycle === 0 ? undefined : "SUCCEEDED", findingDispositions: cycle === 0 ? undefined : Object.fromEntries((state.stories[String(issue.number)].reviewFindings || []).map((finding) => [finding, "FIXED" as const])) });
       } catch (error) {
         const kind = error instanceof CodexRunError ? error.kind : "FAILED";
@@ -222,7 +223,20 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
     await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
     return { status: "NEEDS_HUMAN", state: state.stories[String(issue.number)] };
   } finally {
-    if (worktree) await removeWorktree(root, worktree);
+    if (worktree) {
+      try {
+        // Keep an interrupted or failed implementation worktree when it still
+        // contains uncommitted work. The next invocation discovers it through
+        // Git metadata and can continue from that exact filesystem state.
+        if (await gitStatus(worktree.path, { env: target.env })) {
+          emitOperationalEvent({ source: "git", phase: "WAITING", level: "WARN", message: `Preserving dirty worktree for ${branch}; the next invocation will resume it` });
+        } else {
+          await removeWorktree(root, worktree, { env: target.env });
+        }
+      } catch (error) {
+        emitOperationalEvent({ source: "git", phase: "WAITING", level: "WARN", message: `Worktree cleanup deferred for ${branch}: ${error instanceof Error ? error.message : String(error)}` });
+      }
+    }
   }
 }
 
