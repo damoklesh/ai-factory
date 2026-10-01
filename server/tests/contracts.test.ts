@@ -13,3 +13,10 @@ test("shared contracts validate run, decision, and instruction inputs", () => {
   assert.throws(() => parseConfigUpdateRequest({ config: { password: "secret" }, expectedRevision: "r1", idempotencyKey: "k4" }), /not editable/);
   assert.throws(() => parseConfigUpdateRequest({ config: { maxStories: 0 }, expectedRevision: "r1", idempotencyKey: "k5" }), /between 1 and 100/);
 });
+
+test("validates separate developer and reviewer model settings", () => {
+  const parsed = parseConfigUpdateRequest({ config: { developerModel: "terra", developerReasoning: "high", reviewerModel: "luna", reviewerReasoning: "low" }, expectedRevision: "r1", idempotencyKey: "models-1" });
+  assert.equal(parsed.config.developerModel, "terra");
+  assert.throws(() => parseConfigUpdateRequest({ config: { reviewerModel: "mars" }, expectedRevision: "r1", idempotencyKey: "models-2" }), /luna, sol, or terra/);
+  assert.throws(() => parseConfigUpdateRequest({ config: { developerReasoning: "extreme" }, expectedRevision: "r1", idempotencyKey: "models-3" }), /low, medium, or high/);
+});

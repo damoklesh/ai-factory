@@ -27,6 +27,19 @@ test("normalizes target repository configuration and keeps legacy owner/repo sup
   }
 });
 
+test("loads separate agent models and reasoning defaults", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-factory-agent-config-"));
+  const configPath = join(directory, "config.json");
+  await writeFile(configPath, JSON.stringify({ targetRepository: "acme/revenue", developerModel: "terra", developerReasoning: "high", reviewerModel: "luna", reviewerReasoning: "low" }));
+  const config = loadConfig(configPath);
+  assert.equal(config.developerModel, "terra");
+  assert.equal(config.developerReasoning, "high");
+  assert.equal(config.reviewerModel, "luna");
+  assert.equal(config.reviewerReasoning, "low");
+  await writeFile(configPath, JSON.stringify({ targetRepository: "acme/revenue", reviewerModel: "mars" }));
+  assert.throws(() => loadConfig(configPath), /reviewerModel must be luna, sol, or terra/);
+});
+
 test("rejects a target workspace inside the control repository", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ai-factory-workspace-"));
   try {

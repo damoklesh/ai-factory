@@ -82,6 +82,20 @@ test("executes Codex with schema output and classifies auth/quota failures", asy
   await assert.rejects(() => quotaRunner.reviewer("review", process.cwd(), 1000), (error: CodexRunError) => error.kind === "QUOTA");
 });
 
+test("passes role-specific model and reasoning settings to Codex", async () => {
+  const calls: string[][] = [];
+  const runner = new CodexRunner(process.cwd(), { model: "terra", reasoning: "high" }, { model: "luna", reasoning: "low" }, async (_command, args) => {
+    calls.push(args);
+    const path = args[args.indexOf("-o") + 1];
+    await writeFile(path, args.some((arg) => arg.includes("developer-result.json")) ? JSON.stringify({ summary: "ok", tests: [], risks: [] }) : JSON.stringify({ decision: "PASS", findings: [], evidence: [] }));
+    return { code: 0, stdout: "{}", stderr: "", timedOut: false };
+  });
+  await runner.developer("implement", process.cwd(), 1000);
+  await runner.reviewer("review", process.cwd(), 1000);
+  assert.ok(calls[0].includes("--model") && calls[0].includes("terra") && calls[0].includes("model_reasoning_effort=high"));
+  assert.ok(calls[1].includes("--model") && calls[1].includes("luna") && calls[1].includes("model_reasoning_effort=low"));
+});
+
 test("runs deterministic validation commands and reports failures", async () => {
   const cwd = process.cwd();
   const pass = await runValidation(["node -e \"process.stdout.write('ok')\""], cwd, 5_000);

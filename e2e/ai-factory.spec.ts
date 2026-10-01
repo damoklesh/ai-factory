@@ -8,4 +8,10 @@ test("supervises the offline implementation-review-fix lifecycle and merge gate"
   await page.getByRole("button", { name: "Human validation" }).click(); await expect(page.getByText("MERGE", { exact: true })).toBeVisible(); await page.getByRole("button", { name: "Executions", exact: true }).click();
   await page.getByLabel("Additional instruction").fill("Inspect the browser edge case"); await page.getByRole("button", { name: "Queue instruction" }).click(); await expect(page.getByText(/PENDING_NEXT_INVOCATION/)).toBeVisible();
   await page.reload(); await page.getByRole("button", { name: "Executions", exact: true }).click(); await expect(page.getByText("MERGE_PENDING_APPROVAL: awaiting human merge approval", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await expect(page.getByLabel("Developer model")).toBeVisible();
+  await page.getByLabel("Developer model").selectOption("luna");
+  await page.getByLabel("Reviewer reasoning").selectOption("high");
+  await expect(page.getByLabel("Developer model")).toHaveValue("luna");
+  await expect(page.getByLabel("Reviewer reasoning")).toHaveValue("high");
 });

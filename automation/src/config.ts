@@ -8,6 +8,10 @@ const defaults: Omit<OrchestrationConfig, "owner" | "repo"> = {
   targetBacklogPath: "backlog",
   baseBranch: "main",
   runnerLabel: "ai-local",
+  developerModel: "sol",
+  developerReasoning: "medium",
+  reviewerModel: "sol",
+  reviewerReasoning: "medium",
   validationCommands: [],
   smokeCommands: [],
   requiredChecks: [],
@@ -40,9 +44,15 @@ export function loadConfig(filePath = process.env.AI_FACTORY_CONFIG || "config.j
     targetBacklogPath: source.targetBacklogPath || defaults.targetBacklogPath,
     baseBranch: source.targetBranch || source.baseBranch || defaults.baseBranch,
     timeouts: { ...defaults.timeouts, ...source.timeouts },
+    developerModel: (source.developerModel || source.model || defaults.developerModel) as OrchestrationConfig["developerModel"],
+    developerReasoning: source.developerReasoning || defaults.developerReasoning,
+    reviewerModel: (source.reviewerModel || source.model || defaults.reviewerModel) as OrchestrationConfig["reviewerModel"],
+    reviewerReasoning: source.reviewerReasoning || defaults.reviewerReasoning,
   };
   if (config.autoMerge !== false && config.autoMerge !== true) throw new Error("autoMerge must be boolean");
   if (!Array.isArray(config.allowedChangePaths) || config.allowedChangePaths.some((item) => typeof item !== "string" || !item.trim())) throw new Error("allowedChangePaths must be an array of non-empty strings");
+  for (const [name, value] of [["developerModel", config.developerModel], ["reviewerModel", config.reviewerModel]] as const) if (!["luna", "sol", "terra"].includes(value)) throw new Error(`${name} must be luna, sol, or terra`);
+  for (const [name, value] of [["developerReasoning", config.developerReasoning], ["reviewerReasoning", config.reviewerReasoning]] as const) if (!["low", "medium", "high"].includes(value)) throw new Error(`${name} must be low, medium, or high`);
   positiveNumber(config.maxStories, "maxStories");
   positiveNumber(config.maxFixCycles, "maxFixCycles");
   positiveNumber(config.timeouts.codexMinutes, "timeouts.codexMinutes");

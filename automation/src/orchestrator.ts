@@ -74,7 +74,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   await mark(client, issue, "agent:running");
   try {
     worktree = await createWorktree(root, config.targetBranch, branch, { env: target.env });
-    const codex = new CodexRunner(target.controlRoot, config.model);
+    const codex = new CodexRunner(target.controlRoot, { model: config.developerModel, reasoning: config.developerReasoning }, { model: config.reviewerModel, reasoning: config.reviewerReasoning });
     for (let cycle = firstCycle; cycle <= config.maxFixCycles; cycle += 1) {
       const attemptId = `${config.runId || "cli"}:${issue.number}:${cycle === 0 ? "implement" : "fix"}-${cycle}`;
       transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined, attemptId, fixerStatus: cycle === 0 ? undefined : "STARTING" });

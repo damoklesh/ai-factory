@@ -73,6 +73,10 @@ export interface OrchestrationConfig {
   targetWorkspace?: string;
   runnerLabel: string;
   model?: string;
+  developerModel: "luna" | "sol" | "terra";
+  developerReasoning: "low" | "medium" | "high";
+  reviewerModel: "luna" | "sol" | "terra";
+  reviewerReasoning: "low" | "medium" | "high";
   validationCommands: string[];
   smokeCommands: string[];
   requiredChecks: string[];
