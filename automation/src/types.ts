@@ -78,6 +78,8 @@ export interface OrchestrationConfig {
   developerReasoning: "low" | "medium" | "high" | "xhigh";
   reviewerModel: "luna" | "sol" | "terra";
   reviewerReasoning: "low" | "medium" | "high" | "xhigh";
+  developerPrompt?: string;
+  reviewerPrompt?: string;
   validationCommands: string[];
   smokeCommands: string[];
   requiredChecks: string[];
@@ -112,6 +114,8 @@ export interface StoryState {
   processStatus?: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED";
   validation?: Array<{ command: string; passed: boolean; output: string }>;
   validationAttempts?: number;
+  fixCause?: "LOCAL_VALIDATION" | "CI_FAILURE" | "REVIEW_CHANGES_REQUESTED";
+  manualContinuationCount?: number;
   checkpointSha?: string;
   changedFiles?: string[];
   sourceIssueUrl?: string;

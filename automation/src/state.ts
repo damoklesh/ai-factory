@@ -56,9 +56,13 @@ export function canStartFix(state: StoryState, maxFixCycles: number): boolean {
  * keeps a restart from spending another fix cycle on a PR that was already
  * published and is merely waiting for review/checks.
  */
-export function shouldRunDeveloper(pullRequestExists: boolean, previousStatus?: StoryStatus): boolean {
+export function shouldRunDeveloper(pullRequestExists: boolean, previous?: StoryState, explicitResume = false): boolean {
   if (!pullRequestExists) return true;
-  return previousStatus === "FIXING" || previousStatus === "REVIEW_CHANGES_REQUESTED";
+  if (!previous) return false;
+  if (previous.status === "REVIEW_CHANGES_REQUESTED" || previous.fixCause === "REVIEW_CHANGES_REQUESTED") return true;
+  // A manually resumed human-blocked review may continue with a fresh bounded
+  // correction budget. This is never selected automatically.
+  return explicitResume && previous.status === "NEEDS_HUMAN" && Boolean(previous.reviewFindings?.length);
 }
 
 export type FixCycleCause = "LOCAL_VALIDATION" | "CI_FAILURE" | "REVIEW_CHANGES_REQUESTED";

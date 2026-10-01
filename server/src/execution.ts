@@ -55,6 +55,8 @@ export class ChildProcessExecutionService implements ExecutionService {
       developerReasoning: context.config.developerReasoning,
       reviewerModel: context.config.reviewerModel,
       reviewerReasoning: context.config.reviewerReasoning,
+      developerPrompt: context.config.developerPrompt,
+      reviewerPrompt: context.config.reviewerPrompt,
       validationCommands: context.config.validationCommands,
       requiredChecks: context.config.requiredChecks,
       maxStories: 1,

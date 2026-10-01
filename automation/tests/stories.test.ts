@@ -9,11 +9,12 @@ import { parseArgs, selectExplicitStory } from "../src/orchestrator.js";
 import { evaluateMergeGate, mergeReviewedPullRequest } from "../src/merge.js";
 import { waitForRequiredChecks } from "../src/verify.js";
 import type { GitHubClient } from "../src/github.js";
-import type { Issue } from "../src/types.js";
+import type { Issue, StoryStatus } from "../src/types.js";
 
 const issue = (number: number, priority: number, dependencies = "None"): Issue => ({
   number, title: `US ${number}`, state: "open", labels: ["agent:ready"], body: `## Objective\nAs a user I want story ${number}.\n## Acceptance criteria\n- It works\n- It handles errors\n## Scope\nController\n## Dependencies\n${dependencies}\n## Priority\n${priority}\n## Validation\nnpm test`,
 });
+const stateStory = (status: StoryStatus) => ({ issueNumber: 1, branch: "agent/issue-1", fixCycles: 0, status, updatedAt: new Date().toISOString() });
 
 test("parses the issue contract and orders eligible stories", () => {
   const result = parseStory(issue(2, 1, "#1, #3"));
@@ -75,10 +76,13 @@ test("keeps the correction boundary explicit across a restart", () => {
 
 test("resumes an existing PR at review without another developer cycle", () => {
   assert.equal(shouldRunDeveloper(false), true);
-  assert.equal(shouldRunDeveloper(true, "PR_OPEN"), false);
-  assert.equal(shouldRunDeveloper(true, "FAILED_INFRA"), false);
-  assert.equal(shouldRunDeveloper(true, "REVIEW_CHANGES_REQUESTED"), true);
-  assert.equal(shouldRunDeveloper(true, "FIXING"), true);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("PR_OPEN") }), false);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("FAILED_INFRA") }), false);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("REVIEW_CHANGES_REQUESTED") }), true);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("FIXING"), fixCause: "LOCAL_VALIDATION" }), false);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("FIXING"), fixCause: "REVIEW_CHANGES_REQUESTED" }), true);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix this"] }, false), false);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix this"] }, true), true);
 });
 
 test("allows only an explicit resume to reopen a blocked story", () => {
@@ -136,6 +140,7 @@ test("merge gate requires current review, green current-SHA checks and no blocke
   const checks = [{ name: "CI", status: "completed" as const, conclusion: "success", headSha: "sha" }];
   const noThreads = { available: true, threads: [] };
   assert.equal(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: noThreads }).ready, true);
+  assert.equal(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [{ name: "CI / CI Gate (pull_request)", status: "completed", conclusion: "success", headSha: "sha" }], requiredChecks: ["CI Gate"], reviewThreads: noThreads }).ready, true);
   assert.match(evaluateMergeGate({ currentSha: "new", reviewedSha: "old", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: noThreads }).reason || "", /stale/);
   assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [], requiredChecks: ["CI"], reviewThreads: noThreads }).reason || "", /missing/);
   assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: { available: true, threads: [{ id: "1", headSha: "sha", blocking: true, resolved: false }] } }).reason || "", /unresolved/);
