@@ -172,7 +172,17 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
           : `Bootstrap mode: no required checks configured for ${commit.sha.slice(0, 12)}; continuing to reviewer, merge remains disabled`,
         activity: config.requiredChecks.length ? "WAITING_FOR_CHECKS" : "RUNNING",
       });
-      const checks = await waitForRequiredChecks(client, commit.sha, config.requiredChecks, config.timeouts.ciMinutes * 60_000);
+      let checks: Awaited<ReturnType<typeof waitForRequiredChecks>>;
+      try {
+        checks = await waitForRequiredChecks(client, commit.sha, config.requiredChecks, config.timeouts.ciMinutes * 60_000);
+      } catch (error) {
+        const reason = `Unable to read GitHub Actions workflow status: ${error instanceof Error ? error.message : String(error)}`;
+        transition(state, issue.number, "FAILED_INFRA", { processStatus: "FAILED", reason, validationAttempts });
+        await saveState(stateFile, state);
+        await mark(client, issue, "agent:blocked");
+        await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], reason));
+        return { status: "FAILED_INFRA", state: state.stories[String(issue.number)] };
+      }
       if (checks.decision === "FAIL") {
         feedback = config.requiredChecks.length ? `Required CI checks failed or timed out for SHA ${commit.sha}.` : "No required checks configured; configure at least one required check before merge.";
         transition(state, issue.number, "FIXING", { fixCycles: nextFixCycle(cycle, "CI_FAILURE"), reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });

@@ -87,8 +87,14 @@ export class RestGitHubClient implements GitHubClient {
   }
 
   async getChecks(headSha: string): Promise<CheckRun[]> {
-    const result = await this.request<{ check_runs: Array<{ name: string; status: CheckRun["status"]; conclusion: string | null; head_sha: string }> }>(this.path(`/commits/${encodeURIComponent(headSha)}/check-runs`));
-    return result.check_runs.map((check) => ({ name: check.name, status: check.status, conclusion: check.conclusion, headSha: check.head_sha }));
+    const runs = await this.request<{ workflow_runs: Array<{ id: number; name: string; status: string; conclusion: string | null; head_sha: string }> }>(this.path(`/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100`));
+    const checks: CheckRun[] = [];
+    for (const run of runs.workflow_runs.filter((item) => item.head_sha === headSha)) {
+      const jobs = await this.request<{ jobs: Array<{ name: string; status: string; conclusion: string | null; head_sha?: string }> }>(this.path(`/actions/runs/${run.id}/jobs?per_page=100`));
+      if (jobs.jobs.length) checks.push(...jobs.jobs.map((job) => ({ name: job.name, status: actionStatus(job.status), conclusion: job.conclusion, headSha: job.head_sha || run.head_sha || headSha })));
+      else checks.push({ name: run.name, status: actionStatus(run.status), conclusion: run.conclusion, headSha: run.head_sha || headSha });
+    }
+    return checks;
   }
 
   async createPullRequest(input: { title: string; body: string; headBranch: string; baseBranch: string }): Promise<PullRequest> {
@@ -115,4 +121,10 @@ export class RestGitHubClient implements GitHubClient {
   async closeIssue(issueNumber: number): Promise<void> { await this.request(this.path(`/issues/${issueNumber}`), { method: "PATCH", body: JSON.stringify({ state: "closed" }) }); }
   async comment(issueNumber: number, body: string): Promise<void> { await this.request(this.path(`/issues/${issueNumber}/comments`), { method: "POST", body: JSON.stringify({ body }) }); }
   async mergePullRequest(number: number, expectedSha: string): Promise<{ merged: boolean; message: string; sha?: string }> { return await this.request(this.path(`/pulls/${number}/merge`), { method: "PUT", body: JSON.stringify({ sha: expectedSha, merge_method: "squash" }) }); }
+}
+
+function actionStatus(status: string): CheckRun["status"] {
+  if (status === "completed") return "completed";
+  if (["queued", "waiting", "requested", "pending"].includes(status)) return "queued";
+  return "in_progress";
 }

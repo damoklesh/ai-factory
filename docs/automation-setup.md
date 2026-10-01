@@ -4,7 +4,7 @@ The automation is intentionally local-first. It needs Node 20+, Git, the Codex C
 
 1. Copy `automation/config.example.json` to `automation/config.json` and set the repository and validation commands. Keep this ignored file on the trusted runner; do not commit it. Set `AI_FACTORY_CONFIG` if it lives outside `automation/`.
 2. From `automation/`, run `npm ci`, `npm run doctor`, `npm test`, and `npm run orchestrate -- --dry-run`.
-3. Set `AGENT_GH_TOKEN` only in the runner environment. The token needs repository-scoped Contents, Issues, Pull requests, Checks, and Actions read permissions as required by the configured flow.
+3. Set `AGENT_GH_TOKEN` only in the runner environment. The token needs repository-scoped Contents, Issues, Pull requests, and Actions read permissions as required by the configured flow; the controller reads workflow jobs through Actions API and does not require the unavailable Checks permission on a fine-grained PAT.
 4. Authenticate Codex as the same Linux user that will run the self-hosted runner. Confirm its exact CLI flags with `codex exec --help` before a real run.
 5. Register a self-hosted Linux runner with label `ai-local` in a separate runner directory. Do not store the temporary registration token in this repository.
 6. Create small Issues using `.github/ISSUE_TEMPLATE/agent-story.yml`, add `agent:ready`, and run one story with `autoMerge` disabled.

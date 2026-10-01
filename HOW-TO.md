@@ -17,7 +17,7 @@ Edita `automation/config.json` con el repositorio objetivo, su rama y la ruta de
 "autoMerge": false
 ```
 
-Para que una historia pueda llegar al gate de merge, configura al menos un nombre en `requiredChecks` y asegúrate de que ese check existe en GitHub. No guardes tokens ni credenciales en Git; usa `AGENT_GH_TOKEN` o `GITHUB_TOKEN` sólo en el entorno local.
+Para habilitar el gate de merge, configura al menos un nombre de job de GitHub Actions en `requiredChecks` y asegúrate de que existe para la PR. Durante el bootstrap puedes dejarlo vacío: el reviewer se ejecutará, pero el controlador no hará merge automático. No guardes tokens ni credenciales en Git; usa `AGENT_GH_TOKEN` o `GITHUB_TOKEN` sólo en el entorno local.
 
 ## 2. Arrancar la aplicación
 
@@ -46,4 +46,3 @@ npm run orchestrate --prefix automation -- --mock --max-stories 1
 ```
 
 El modo `--mock` no contacta con GitHub ni Codex. Para revisar una configuración sin ejecutar cambios, usa `--dry-run`.
-

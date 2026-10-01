@@ -97,7 +97,7 @@ GitHub conserva el estado recuperable. Los archivos locales son caché. Cada arr
 3. Recuperar una US en curso; si no existe, seleccionar la siguiente elegible. Crear worktree desde la rama base actualizada, separado del checkout personal.
 4. Invocar Codex con Node child_process.spawn y argumentos separados, sin concatenar texto de Issues en comandos shell. Prompt por stdin. Capturar eventos, stderr, exit code y resultado final.
 5. Developer implementa y ejecuta pruebas. El controlador repite comandos configurados y comprueba cambios reales. El controlador crea commit, push y PR: estas operaciones no dependen de que el modelo afirme haberlas hecho.
-6. Consultar la PR por API y esperar checks explícitamente requeridos para su head SHA. Checks ausentes, skipped o antiguos no son PASS.
+6. Consultar la PR por API y esperar jobs de GitHub Actions explícitamente requeridos para su head SHA. Jobs ausentes, skipped o antiguos no son PASS; durante el bootstrap, `requiredChecks: []` permite la revisión pero mantiene cerrado el gate de merge.
 7. Reviewer inicia contexto nuevo, recibe especificación, diff y resultados; produce JSON PASS/CHANGES_REQUESTED/NEEDS_HUMAN con hallazgos y evidencia. Su PASS es una evaluación del modelo, no una garantía.
 8. Ante fallo funcional o de revisión, Developer corrige la misma rama y se repiten verificaciones para el nuevo SHA. Máximo tres ciclos de corrección totales por US, persistidos entre reanudaciones.
 9. Solo fusionar si autoMerge=true, CI y review coinciden con el SHA actual, no hay bloqueo y se cumplen las reglas del repositorio. Usar la comprobación de SHA de la API de merge para evitar carreras.
@@ -123,7 +123,7 @@ El prompt entra por stdin. Un exit code cero no basta: validar schema, resultado
 
 Usar login ChatGPT bajo el usuario que ejecutará el runner. No subir auth.json a GitHub ni imprimirlo. La documentación oficial reserva esta ruta de autenticación CI a entornos confiables y advierte que no debe utilizarse con repositorios públicos/open source. Este plan adopta un repositorio privado y solo ejecuciones autorizadas por Steve.
 
-Para GitHub, V1 usa un fine-grained PAT limitado al repositorio piloto, guardado como secret AGENT_GH_TOKEN. Permisos mínimos según llamadas implementadas: Contents, Pull requests e Issues read/write; Actions y Checks read. Evitar permisos de edición de workflows salvo necesidad explícita de bootstrap.
+Para GitHub, V1 usa un fine-grained PAT limitado al repositorio piloto, guardado como secret AGENT_GH_TOKEN. Permisos mínimos según llamadas implementadas: Contents, Pull requests e Issues read/write y Actions read para consultar workflow runs/jobs. No depender de Checks en un fine-grained PAT, porque ese permiso no está disponible en su selector. Evitar permisos de edición de workflows salvo necesidad explícita de bootstrap.
 
 No asumir que GITHUB_TOKEN encadena automáticamente todos los eventos: las PR creadas con él pueden requerir aprobación de workflows y otros eventos no relanzan Actions. El PAT permite CI automático; una GitHub App es evolución posterior. El controlador conserva ese token y realiza operaciones GitHub; no incluirlo en prompts.
 
