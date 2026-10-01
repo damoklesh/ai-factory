@@ -46,6 +46,19 @@ test("honors explicit selection and dependency gates", async () => {
   await assert.rejects(() => controller.start({ maxStories: 1, autoMerge: true }), /AUTO_MERGE_DISABLED/);
 });
 
+test("allows an explicitly selected story to restart after its PR was closed without merge", async () => {
+  const execution = new FakeExecution();
+  const githubAdapter: GithubSyncAdapter = { async observe() { return [{ storyId: "US-003", githubIssueNumber: 3, pullRequestNumber: 35, headSha: "closed-sha", state: "CLOSED", checks: "UNKNOWN", checkedAt: new Date().toISOString() }]; } };
+  const { controller } = await fixture(execution, githubAdapter);
+  await controller.sync();
+  const restarted = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "selected", storyId: "US-003" });
+  assert.equal(restarted.status, "ACTIVE");
+  assert.equal(execution.contexts[0].story.storyId, "US-003");
+  assert.equal(execution.contexts[0].story.pullRequestNumber, undefined);
+  assert.equal(execution.contexts[0].freshStart, true);
+  assert.equal((await controller.story("US-003"))?.blockedReason, undefined);
+});
+
 test("reconciles a missing GitHub issue link before execution after a restart", async () => {
   const root = await mkdtemp(join(tmpdir(), "ai-factory-restart-sync-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
   await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });

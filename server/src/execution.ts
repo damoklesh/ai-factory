@@ -16,6 +16,7 @@ export interface ExecutionContext {
   config: AppConfigView;
   instructions?: string[];
   resume?: boolean;
+  freshStart?: boolean;
   onEvent?: (event: ExecutionProcessEvent) => void;
 }
 export interface ExecutionProcessEvent {
@@ -75,6 +76,7 @@ export class ChildProcessExecutionService implements ExecutionService {
     const instructionTemp = `${instructionPath}.${process.pid}.tmp`; await writeFile(instructionTemp, `${JSON.stringify(context.instructions || [], null, 2)}\n`, "utf8"); await rename(instructionTemp, instructionPath);
     const args = [script, "--config", configPath, "--max-stories", "1", "--story-id", context.story.storyId, "--story-contract", storyContractPath, "--instruction-file", instructionPath, "--run-id", context.runId];
     if (context.resume) args.push("--resume");
+    if (context.freshStart) args.push("--fresh-start");
     const child = spawn(process.execPath, args, { cwd: context.controlRoot, env: process.env, shell: false, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     this.activeProjects.set(context.project.projectId, context.runId);
     let stdout = ""; let stderr = ""; let stdoutBuffer = ""; let stderrBuffer = ""; let terminalOutcome: string | undefined; let timedOut = false; let cancelRequested = false;

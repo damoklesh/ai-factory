@@ -116,6 +116,16 @@ export async function removeWorktree(repoRoot: string, worktree: Worktree, optio
   if (result.code !== 0) throw new Error(`git worktree cleanup failed: ${result.stderr.trim() || result.stdout.trim()}`);
 }
 
+/** Remove only the deterministic local workspace for an explicitly restarted story. */
+export async function resetStoryWorkspace(repoRoot: string, branch: string, options: GitOptions = {}): Promise<void> {
+  if (!/^agent\/issue-\d+$/.test(branch)) throw new Error(`refusing to reset a non-agent branch: ${branch}`);
+  const existing = await findExistingWorktree(repoRoot, branch, options);
+  if (existing) await removeWorktree(repoRoot, existing, options);
+  await runProcess("git", ["worktree", "prune"], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
+  const deleted = await runProcess("git", ["branch", "-D", branch], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
+  if (deleted.code !== 0 && !/not found|not a valid branch/i.test(`${deleted.stdout}\n${deleted.stderr}`)) throw new Error(`git branch -D ${branch} failed: ${deleted.stderr.trim() || deleted.stdout.trim()}`);
+}
+
 export function gitAuthEnv(token?: string): NodeJS.ProcessEnv | undefined {
   if (!token) return undefined;
   const basicCredentials = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");

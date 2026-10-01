@@ -207,17 +207,26 @@ export class LocalController {
     if (request.autoMerge) throw new Error("AUTO_MERGE_DISABLED");
     if (request.expectedConfigRevision && request.expectedConfigRevision !== this.configRevision) throw new Error("VERSION_CONFLICT");
     if (this.startPending || (this.activeRun && ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(this.activeRun.status))) throw new Error("RUN_ALREADY_ACTIVE");
-    this.startPending = true; const now = new Date().toISOString(); const selectionMode = request.selectionMode || "auto"; let story: StoryDetail | undefined;
+    this.startPending = true; const now = new Date().toISOString(); const selectionMode = request.selectionMode || "auto"; let story: StoryDetail | undefined; let freshStart = false;
     try {
       story = this.selectRunnableStory(selectionMode, request.storyId);
+      if (this.isAbandonedPullRequest(story)) {
+        // A selected story is an explicit human decision to restart an
+        // abandoned PR. The orchestrator removes only its agent worktree and
+        // branch before recreating it from the configured base branch.
+        freshStart = true;
+        const restarted = { ...story, executionStatus: "IDLE" as const, deliveryStatus: "NOT_STARTED" as const, blockedReason: undefined, pullRequestNumber: undefined, headSha: undefined, validatedHeadSha: undefined, externalStatus: "UNKNOWN" as const, validationStatus: "PENDING" as const, updatedAt: now };
+        this.stories = this.stories.map((item) => item.storyId === restarted.storyId ? restarted : item);
+        story = restarted;
+      }
       if (this.options.executionService && story) story = await this.ensureGithubIssueLink(story);
       if (this.options.executionService && !story) throw new Error("NO_ELIGIBLE_STORY");
-      const maxStories = Math.max(1, Math.min(20, Math.floor(request.maxStories || 1))); const selectionPlan = this.plannedStoryIds(maxStories); this.activeRun = { schemaVersion: SCHEMA_VERSION, runId: randomUUID(), storyId: story?.storyId, status: "IDLE", phase: "SELECTING", startedAt: now, updatedAt: now, attempts: 0, maxStories, autoMerge: false, validationStatus: "PENDING", effectiveConfigRevision: this.configRevision, effectiveSpecRevision: story?.specRevision, selectionMode, targetProjectId: this.activeProject?.projectId, selectionPlan, completedStories: [], remainingStories: selectionPlan.slice(1) }; await this.persist("run accepted; starting bounded backlog plan");
+      const maxStories = Math.max(1, Math.min(20, Math.floor(request.maxStories || 1))); const selectionPlan = this.plannedStoryIds(maxStories); this.activeRun = { schemaVersion: SCHEMA_VERSION, runId: randomUUID(), storyId: story?.storyId, status: "IDLE", phase: "SELECTING", startedAt: now, updatedAt: now, attempts: 0, maxStories, autoMerge: false, validationStatus: "PENDING", effectiveConfigRevision: this.configRevision, effectiveSpecRevision: story?.specRevision, selectionMode, targetProjectId: this.activeProject?.projectId, selectionPlan, completedStories: [], remainingStories: selectionPlan.slice(1) }; await this.persist(freshStart ? "run accepted; restarting the closed pull request from the base branch" : "run accepted; starting bounded backlog plan");
     }
     catch (error) { this.startPending = false; throw error; }
     if (!this.options.executionService) { this.activeRun = { ...this.activeRun!, status: "ACTIVE", updatedAt: new Date().toISOString() }; if (story) this.markStoryActive(story, now); await this.persist("run started"); this.startPending = false; return this.activeRun; }
     try {
-      const lock = new ProjectRunLock(this.options.projectStore!.projectDataRoot(this.activeProject!.projectId)); await lock.acquire(this.activeRun!.runId); this.runLocks.set(this.activeRun!.runId, lock); return await this.spawnExecution(story!);
+      const lock = new ProjectRunLock(this.options.projectStore!.projectDataRoot(this.activeProject!.projectId)); await lock.acquire(this.activeRun!.runId); this.runLocks.set(this.activeRun!.runId, lock); return await this.spawnExecution(story!, [], false, freshStart);
     } catch (error) {
       if (error instanceof Error && ["RUN_ALREADY_ACTIVE_FOR_PROJECT", "RUN_LOCK_RECOVERY_REQUIRED"].includes(error.message)) { this.activeRun = undefined; throw error; }
       await this.runLocks.get(this.activeRun!.runId)?.release(this.activeRun!.runId); this.runLocks.delete(this.activeRun!.runId);
@@ -258,9 +267,9 @@ export class LocalController {
     await this.enqueueEvent(snapshot.runId, snapshot, { source: "controller", phase: snapshot.phase, level: "INFO", message });
   }
 
-  private async spawnExecution(story: StoryDetail, instructions: string[] = [], resume = false): Promise<RunSnapshot> {
+  private async spawnExecution(story: StoryDetail, instructions: string[] = [], resume = false, freshStart = false): Promise<RunSnapshot> {
     const project = this.activeProject!; const stateRoot = this.options.projectStore!.projectDataRoot(project.projectId); const runId = this.activeRun!.runId;
-    const handle = await this.options.executionService!.start({ runId, story, project, controlRoot: this.options.projectStore!.controlRoot, stateRoot, configRevision: this.configRevision, config: { ...this.config }, instructions, resume, onEvent: (event) => { void this.recordProcessEvent(runId, event); } });
+    const handle = await this.options.executionService!.start({ runId, story, project, controlRoot: this.options.projectStore!.controlRoot, stateRoot, configRevision: this.configRevision, config: { ...this.config }, instructions, resume, freshStart, onEvent: (event) => { void this.recordProcessEvent(runId, event); } });
     this.executionHandles.set(runId, handle); this.activeRun = { ...this.activeRun!, status: "ACTIVE", phase: "IMPLEMENTING", activity: "RUNNING", processId: handle.pid, attempts: this.activeRun!.attempts + 1, updatedAt: new Date().toISOString() }; this.markStoryActive(story, this.activeRun.updatedAt); await this.persist("orchestrator process spawned"); void handle.completion.then((outcome) => this.completeExecution(runId, outcome)); return this.activeRun;
   }
 
@@ -317,7 +326,17 @@ export class LocalController {
     await this.persist(`confirmed external merge for ${run.storyId}; continuing with ${next.storyId}`);
     const lock = new ProjectRunLock(this.options.projectStore!.projectDataRoot(this.activeProject.projectId)); await lock.acquire(run.runId); this.runLocks.set(run.runId, lock); await this.spawnExecution(next);
   }
-  private selectRunnableStory(mode: "selected" | "auto", storyId?: string): StoryDetail | undefined { const runnable = (story: StoryDetail) => story.valid !== false && story.deliveryStatus !== "MERGED" && story.executionStatus === "IDLE" && !story.blockedReason && !story.dependencyError && story.dependencies.every((dependency) => this.stories.find((item) => item.storyId === dependency)?.deliveryStatus === "MERGED"); if (mode === "selected") { const selected = this.stories.find((item) => item.storyId === storyId); if (!selected) throw new Error("STORY_NOT_FOUND"); if (!runnable(selected)) throw new Error(`STORY_NOT_RUNNABLE: ${selected.dependencyError || selected.blockedReason || "dependencies are not merged or the story is already active/completed"}`); return selected; } return [...this.stories].filter(runnable).sort((left, right) => left.priority - right.priority || left.storyId.localeCompare(right.storyId, "en") || (left.sourceFile || "").localeCompare(right.sourceFile || "", "en"))[0]; }
+  private isAbandonedPullRequest(story: StoryDetail | undefined): story is StoryDetail { return Boolean(story && story.externalStatus === "CLOSED" && story.blockedReason === "Pull request closed without merge"); }
+  private selectRunnableStory(mode: "selected" | "auto", storyId?: string): StoryDetail | undefined {
+    const runnable = (story: StoryDetail, allowAbandonedPullRequest = false) => story.valid !== false && story.deliveryStatus !== "MERGED" && story.executionStatus === "IDLE" && (!story.blockedReason || (allowAbandonedPullRequest && this.isAbandonedPullRequest(story))) && !story.dependencyError && story.dependencies.every((dependency) => this.stories.find((item) => item.storyId === dependency)?.deliveryStatus === "MERGED");
+    if (mode === "selected") {
+      const selected = this.stories.find((item) => item.storyId === storyId);
+      if (!selected) throw new Error("STORY_NOT_FOUND");
+      if (!runnable(selected, true)) throw new Error(`STORY_NOT_RUNNABLE: ${selected.dependencyError || selected.blockedReason || "dependencies are not merged or the story is already active/completed"}`);
+      return selected;
+    }
+    return [...this.stories].filter((story) => runnable(story)).sort((left, right) => left.priority - right.priority || left.storyId.localeCompare(right.storyId, "en") || (left.sourceFile || "").localeCompare(right.sourceFile || "", "en"))[0];
+  }
   private plannedStoryIds(maxStories: number): string[] { const candidates = this.stories.filter((story) => story.valid !== false && story.deliveryStatus !== "MERGED" && story.executionStatus === "IDLE" && !story.blockedReason && !story.dependencyError && story.dependencies.every((dependency) => this.stories.find((item) => item.storyId === dependency)?.deliveryStatus === "MERGED")).sort((left, right) => left.priority - right.priority || left.storyId.localeCompare(right.storyId, "en") || (left.sourceFile || "").localeCompare(right.sourceFile || "", "en")); return candidates.slice(0, maxStories).map((story) => story.storyId); }
   private markStoryActive(story: StoryDetail, updatedAt: string): void { this.stories = this.stories.map((item) => item.storyId === story.storyId ? { ...item, executionStatus: "ACTIVE", deliveryStatus: "IMPLEMENTING", branch: story.githubIssueNumber ? `agent/issue-${story.githubIssueNumber}` : item.branch, updatedAt } : item); }
   private async completeExecution(runId: string, outcome: ExecutionOutcome): Promise<void> { await this.eventQueues.get(runId); const run = this.runHistory.find((item) => item.runId === runId); if (!run) return; const awaitingMerge = /MERGE_PENDING_APPROVAL|awaiting human merge approval/i.test(outcome.summary); const terminalStatus = awaitingMerge ? "BLOCKED" as const : outcome.status; const finished = { ...run, status: terminalStatus, phase: "FINISHED" as const, activity: "IDLE" as const, resultSummary: sanitizeText(outcome.summary), updatedAt: new Date().toISOString() }; this.activeRun = finished; this.runHistory = [finished, ...this.runHistory.filter((item) => item.runId !== runId)]; this.executionHandles.delete(runId); await this.runLocks.get(runId)?.release(runId); this.runLocks.delete(runId); const story = run.storyId ? this.stories.find((item) => item.storyId === run.storyId) : undefined; if (awaitingMerge && story && !this.approvalItems.some((item) => item.runId === runId && item.type === "MERGE" && item.status === "PENDING")) this.approvalItems.push({ schemaVersion: SCHEMA_VERSION, requestId: randomUUID(), runId, storyId: story.storyId, type: "MERGE", status: "PENDING", problem: "The current PR passed automated review and checks.", evidence: [`PR #${story.pullRequestNumber || "unknown"}`, `HEAD SHA: ${story.headSha || "unknown"}`, "AI review: approved for this SHA", "Required checks: green for this SHA"], proposedAction: "Merge the current pull request after confirming the SHA and checks.", expectedHeadSha: story.headSha, expectedSpecRevision: story.specRevision, createdAt: finished.updatedAt });

@@ -92,6 +92,9 @@ test("allows only an explicit resume to reopen a blocked story", () => {
   assert.throws(() => selectExplicitStory([blocked], new Set(), "US-001"), /blocked/);
   assert.equal(selectExplicitStory([blocked], new Set(), "US-001", undefined, true).issue.number, 18);
   assert.equal(parseArgs(["--story-id", "US-001", "--resume"]).resume, true);
+  assert.equal(parseArgs(["--story-id", "US-001", "--fresh-start"]).freshStart, true);
+  assert.throws(() => parseArgs(["--fresh-start"]), /requires --story-id/);
+  assert.throws(() => parseArgs(["--story-id", "US-001", "--resume", "--fresh-start"]), /cannot be combined/);
 });
 
 test("rejects malformed agent results", () => {

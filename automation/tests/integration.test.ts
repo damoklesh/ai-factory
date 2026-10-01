@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commitAndPush, commitLocal, createWorktree, gitDiff, gitSha, gitStatus, inspectChanges, pushBranch, removeWorktree, squashBranch } from "../src/git.js";
+import { commitAndPush, commitLocal, createWorktree, gitDiff, gitSha, gitStatus, inspectChanges, pushBranch, removeWorktree, resetStoryWorkspace, squashBranch } from "../src/git.js";
 import { runProcess } from "../src/processes.js";
 import { runOrchestrator } from "../src/orchestrator.js";
 
@@ -68,6 +68,18 @@ test("reuses a branch worktree left by an interrupted invocation", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("resets only an explicitly restarted agent workspace to the base branch", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-factory-fresh-start-")); const repository = join(directory, "repo"); const remote = join(directory, "remote.git");
+  try {
+    await git(directory, ["init", "--bare", remote]); await git(directory, ["init", repository]); await git(repository, ["config", "user.email", "test@example.invalid"]); await git(repository, ["config", "user.name", "AI Factory Test"]);
+    await writeFile(join(repository, "README.md"), "base\n"); await git(repository, ["add", "README.md"]); await git(repository, ["commit", "-m", "base"]); await git(repository, ["branch", "-M", "main"]); await git(repository, ["remote", "add", "origin", remote]); await git(repository, ["push", "-u", "origin", "main"]);
+    const stale = await createWorktree(repository, "main", "agent/issue-103"); await writeFile(join(stale.path, "stale.txt"), "discard\n");
+    await resetStoryWorkspace(repository, "agent/issue-103");
+    const fresh = await createWorktree(repository, "main", "agent/issue-103");
+    try { await assert.rejects(() => readFile(join(fresh.path, "stale.txt"), "utf8")); assert.equal(await gitStatus(fresh.path), ""); } finally { await removeWorktree(repository, fresh); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("creates local checkpoints and squashes them before publishing", async () => {

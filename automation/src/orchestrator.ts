@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { loadConfig, resolveModelId } from "./config.js";
 import { CodexRunError, CodexRunner } from "./codex.js";
 import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubClient } from "./github.js";
-import { commitLocal, createWorktree, gitDiff, gitRoot, gitSha, gitStatus, pushBranch, removeWorktree, squashBranch, ensureTargetRepository, type Worktree } from "./git.js";
+import { commitLocal, createWorktree, gitDiff, gitRoot, gitSha, gitStatus, pushBranch, removeWorktree, resetStoryWorkspace, squashBranch, ensureTargetRepository, type Worktree } from "./git.js";
 import { backlogPath, storyIssueId, syncBacklog } from "./backlog.js";
 import { loadState, saveState, transition, nextFixCycle, shouldRunDeveloper } from "./state.js";
 import { evaluateMergeGate, mergeReviewedPullRequest } from "./merge.js";
@@ -12,14 +12,14 @@ import { parseStory, selectNextStory, storyEligibility, validateDependencyGraph 
 import { dependencyInstallCommand, installDependencies, runValidationPlan, validationsPassed, waitForRequiredChecks } from "./verify.js";
 import type { Issue, OrchestrationConfig, PullRequest, StoryContract, StoryState } from "./types.js";
 
-export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; storyId?: string; runId?: string; resume: boolean; storyContractPath?: string; instructionPath?: string; }
+export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; storyId?: string; runId?: string; resume: boolean; freshStart: boolean; storyContractPath?: string; instructionPath?: string; }
 
 function emitOperationalEvent(input: { source: "orchestrator" | "developer" | "reviewer" | "git" | "github" | "validation"; phase: string; message: string; level?: "INFO" | "WARN" | "ERROR"; command?: string; activity?: "RUNNING" | "WAITING_FOR_INPUT" | "WAITING_FOR_CHECKS"; outcome?: string }): void {
   console.log(JSON.stringify({ aiFactoryEvent: true, level: "INFO", activity: "RUNNING", ...input }));
 }
 
 export function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = { configPath: process.env.AI_FACTORY_CONFIG || "config.json", dryRun: false, mock: false, syncBacklog: false, resume: false };
+  const options: CliOptions = { configPath: process.env.AI_FACTORY_CONFIG || "config.json", dryRun: false, mock: false, syncBacklog: false, resume: false, freshStart: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--dry-run") options.dryRun = true;
@@ -31,6 +31,7 @@ export function parseArgs(args: string[]): CliOptions {
     else if (arg === "--story-id") options.storyId = args[++index];
     else if (arg === "--run-id") options.runId = args[++index];
     else if (arg === "--resume") options.resume = true;
+    else if (arg === "--fresh-start") options.freshStart = true;
     else if (arg === "--story-contract") options.storyContractPath = args[++index];
     else if (arg === "--instruction-file") options.instructionPath = args[++index];
     else throw new Error(`unknown argument ${arg}`);
@@ -38,6 +39,8 @@ export function parseArgs(args: string[]): CliOptions {
   if (options.maxStories !== undefined && (!Number.isInteger(options.maxStories) || options.maxStories < 1)) throw new Error("--max-stories must be a positive integer");
   if (options.storyId !== undefined && !/^US-\d{3,}$/i.test(options.storyId)) throw new Error("--story-id must match US-###");
   if (options.resume && !options.storyId) throw new Error("--resume requires --story-id");
+  if (options.freshStart && !options.storyId) throw new Error("--fresh-start requires --story-id");
+  if (options.freshStart && options.resume) throw new Error("--fresh-start cannot be combined with --resume");
   return options;
 }
 
@@ -69,14 +72,14 @@ async function mark(client: GitHubClient, issue: Issue, status: "agent:running" 
   await client.setIssueLabels(issue.number, replaceAgentLabel(issue.labels, status));
 }
 
-async function processStory(client: GitHubClient, config: OrchestrationConfig, target: { path: string; controlRoot: string; env?: NodeJS.ProcessEnv }, issue: Issue, contract: StoryContract, stateFile: string, instructions: string[] = [], explicitResume = false): Promise<StoryStatusResult> {
+async function processStory(client: GitHubClient, config: OrchestrationConfig, target: { path: string; controlRoot: string; env?: NodeJS.ProcessEnv }, issue: Issue, contract: StoryContract, stateFile: string, instructions: string[] = [], explicitResume = false, freshStart = false): Promise<StoryStatusResult> {
   emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Preparing isolated worktree for issue #${issue.number}` });
   const state = await loadState(stateFile);
   const branch = `agent/issue-${issue.number}`;
   const root = target.path;
   let worktree: Worktree | undefined;
-  let pullRequest: PullRequest | undefined = (await client.listPullRequests(branch))[0];
-  const previous = state.stories[String(issue.number)];
+  let pullRequest: PullRequest | undefined = freshStart ? undefined : (await client.listPullRequests(branch))[0];
+  const previous = freshStart ? undefined : state.stories[String(issue.number)];
   // Fix cycles measure developer/reviewer iterations after a PR exists. A stale
   // local-only state must never consume that budget or make the first PR start
   // at an exhausted cycle.
@@ -86,10 +89,14 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   let implementationAttempt = 0;
   let validationAttempts = previous?.validationAttempts || 0;
   let developerNeeded = shouldRunDeveloper(Boolean(pullRequest), previous, explicitResume);
-  transition(state, issue.number, developerNeeded ? "IMPLEMENTING" : "PR_OPEN", { branch, pullRequestNumber: pullRequest?.number, fixCycles: cycle, startedAt: new Date().toISOString(), processStatus: "STARTING", sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}`, manualContinuationCount: manualContinuation ? (previous?.manualContinuationCount || 0) + 1 : previous?.manualContinuationCount });
+  transition(state, issue.number, developerNeeded ? "IMPLEMENTING" : "PR_OPEN", { branch, pullRequestNumber: pullRequest?.number, headSha: freshStart ? undefined : previous?.headSha, fixCycles: cycle, startedAt: new Date().toISOString(), processStatus: "STARTING", sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}`, manualContinuationCount: manualContinuation ? (previous?.manualContinuationCount || 0) + 1 : previous?.manualContinuationCount, ...(freshStart ? { reason: undefined, validation: undefined, validationAttempts: undefined, fixCause: undefined, checkpointSha: undefined, changedFiles: undefined, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined, reviewerStartedAt: undefined, reviewerFinishedAt: undefined, reviewFindings: undefined, reviewEvidence: undefined, reviewPublicationKey: undefined, reviewUrl: undefined } : {}) });
   await saveState(stateFile, state);
   await mark(client, issue, "agent:running");
   try {
+    if (freshStart) {
+      emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Resetting local agent workspace for ${branch}; starting from ${config.targetBranch}` });
+      await resetStoryWorkspace(root, branch, { env: target.env });
+    }
     worktree = await createWorktree(root, config.targetBranch, branch, { env: target.env });
     emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `${worktree.reused ? "Resuming" : "Created"} local worktree for ${branch} at ${worktree.path}` });
     const dependencyCommand = await dependencyInstallCommand(worktree.path);
@@ -428,7 +435,7 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   for (let count = 0; count < effectiveConfig.maxStories; count += 1) {
     const selection = options.storyId ? selectExplicitStory(issues, completed, options.storyId, explicitContract, options.resume) : selectNextStory(issues, completed);
     if (!selection) { console.log("No eligible agent:ready story found."); break; }
-    const result = await processStory(client, effectiveConfig, { ...target, controlRoot }, selection.issue, selection.contract, stateFile, instructions, options.resume);
+    const result = await processStory(client, effectiveConfig, { ...target, controlRoot }, selection.issue, selection.contract, stateFile, instructions, options.resume, options.freshStart);
     emitOperationalEvent({ source: "orchestrator", phase: result.status === "PR_OPEN" || result.status === "DONE" ? "FINISHED" : "WAITING", message: `${result.status} #${selection.issue.number}${result.state.reason ? `: ${result.state.reason}` : ""}`, level: result.status === "FAILED_INFRA" ? "ERROR" : result.status === "PR_OPEN" || result.status === "DONE" ? "INFO" : "WARN", activity: result.status === "PR_OPEN" || result.status === "DONE" ? "RUNNING" : "WAITING_FOR_INPUT", outcome: result.status });
     console.log(`${result.status} #${selection.issue.number}${result.state.reason ? `: ${result.state.reason}` : ""}`);
     if (result.status === "DONE") completed.add(selection.issue.number); else break;
