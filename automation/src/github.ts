@@ -13,7 +13,7 @@ export interface GitHubClient {
   setIssueLabels(issueNumber: number, labels: string[]): Promise<void>;
   closeIssue(issueNumber: number): Promise<void>;
   comment(issueNumber: number, body: string): Promise<void>;
-  mergePullRequest(number: number, expectedSha: string): Promise<{ merged: boolean; message: string }>;
+  mergePullRequest(number: number, expectedSha: string): Promise<{ merged: boolean; message: string; sha?: string }>;
 }
 
 export function replaceAgentLabel(labels: string[], next: "agent:ready" | "agent:running" | "agent:blocked" | "agent:done"): string[] {
@@ -106,5 +106,5 @@ export class RestGitHubClient implements GitHubClient {
   async setIssueLabels(issueNumber: number, labels: string[]): Promise<void> { await this.request(this.path(`/issues/${issueNumber}/labels`), { method: "PUT", body: JSON.stringify({ labels }) }); }
   async closeIssue(issueNumber: number): Promise<void> { await this.request(this.path(`/issues/${issueNumber}`), { method: "PATCH", body: JSON.stringify({ state: "closed" }) }); }
   async comment(issueNumber: number, body: string): Promise<void> { await this.request(this.path(`/issues/${issueNumber}/comments`), { method: "POST", body: JSON.stringify({ body }) }); }
-  async mergePullRequest(number: number, expectedSha: string): Promise<{ merged: boolean; message: string }> { return await this.request(this.path(`/pulls/${number}/merge`), { method: "PUT", body: JSON.stringify({ sha: expectedSha, merge_method: "squash" }) }); }
+  async mergePullRequest(number: number, expectedSha: string): Promise<{ merged: boolean; message: string; sha?: string }> { return await this.request(this.path(`/pulls/${number}/merge`), { method: "PUT", body: JSON.stringify({ sha: expectedSha, merge_method: "squash" }) }); }
 }

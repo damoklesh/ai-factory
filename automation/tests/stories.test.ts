@@ -6,7 +6,7 @@ import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { evaluateRequiredChecks } from "../src/checks.js";
 import { buildPullRequestBody, replaceAgentLabel } from "../src/github.js";
 import { parseArgs } from "../src/orchestrator.js";
-import { mergeReviewedPullRequest } from "../src/merge.js";
+import { evaluateMergeGate, mergeReviewedPullRequest } from "../src/merge.js";
 import { waitForRequiredChecks } from "../src/verify.js";
 import type { GitHubClient } from "../src/github.js";
 import type { Issue } from "../src/types.js";
@@ -92,4 +92,12 @@ test("waits for current-SHA CI and blocks a changed PR head at merge", async () 
   const result = await waitForRequiredChecks(client, "new", ["CI"], 1000, 0);
   assert.equal(result.decision, "PASS");
   await assert.rejects(() => mergeReviewedPullRequest(client, 12, "reviewed"), /stale/);
+});
+
+test("merge gate requires current review, green current-SHA checks and no blockers", () => {
+  const checks = [{ name: "CI", status: "completed" as const, conclusion: "success", headSha: "sha" }];
+  assert.equal(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"] }).ready, true);
+  assert.match(evaluateMergeGate({ currentSha: "new", reviewedSha: "old", reviewDecision: "PASS", checks, requiredChecks: ["CI"] }).reason || "", /stale/);
+  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [], requiredChecks: ["CI"] }).reason || "", /missing/);
+  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], unresolvedBlockingComments: 1 }).reason || "", /unresolved/);
 });

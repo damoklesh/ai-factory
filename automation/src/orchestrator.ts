@@ -7,7 +7,7 @@ import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubC
 import { commitAndPush, createWorktree, gitDiff, gitRoot, removeWorktree, ensureTargetRepository, type Worktree } from "./git.js";
 import { backlogPath, storyIssueId, syncBacklog } from "./backlog.js";
 import { loadState, saveState, transition, canStartFix } from "./state.js";
-import { mergeReviewedPullRequest } from "./merge.js";
+import { evaluateMergeGate, mergeReviewedPullRequest } from "./merge.js";
 import { parseStory, selectNextStory, storyEligibility, validateDependencyGraph } from "./stories.js";
 import { runValidationPlan, validationsPassed, waitForRequiredChecks } from "./verify.js";
 import type { Issue, OrchestrationConfig, PullRequest, StoryContract, StoryState } from "./types.js";
@@ -171,22 +171,37 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       }
       transition(state, issue.number, "REVIEW_APPROVED", { reviewHeadSha: commit.sha });
       await saveState(stateFile, state);
+      let gate;
+      try {
+        const current = await client.getPullRequest(pullRequest.number);
+        gate = evaluateMergeGate({ currentSha: current.headSha, reviewedSha: commit.sha, reviewDecision: review.decision, checks: checks.checks, requiredChecks: config.requiredChecks, unresolvedBlockingComments: 0 });
+      } catch (error) {
+        transition(state, issue.number, "MERGE_FAILED", { reason: error instanceof Error ? error.message : String(error) });
+        await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
+        return { status: "MERGE_FAILED", state: state.stories[String(issue.number)] };
+      }
+      if (!gate.ready) {
+        transition(state, issue.number, "READY_FOR_MERGE", { reason: gate.reason, headSha: commit.sha });
+        await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
+        return { status: "READY_FOR_MERGE", state: state.stories[String(issue.number)] };
+      }
       if (!config.autoMerge) {
-        transition(state, issue.number, "PR_OPEN", { headSha: commit.sha, reviewHeadSha: commit.sha });
+        transition(state, issue.number, "MERGE_PENDING_APPROVAL", { headSha: commit.sha, reviewHeadSha: commit.sha, reason: "Awaiting human merge approval" });
         await saveState(stateFile, state);
-        return { status: "PR_OPEN", state: state.stories[String(issue.number)] };
+        emitOperationalEvent({ source: "github", phase: "WAITING", message: `Awaiting human merge approval for PR #${pullRequest.number}`, activity: "WAITING_FOR_INPUT", outcome: "MERGE_PENDING_APPROVAL" });
+        return { status: "MERGE_PENDING_APPROVAL", state: state.stories[String(issue.number)] };
       }
       let merged;
       try {
         merged = await mergeReviewedPullRequest(client, pullRequest.number, commit.sha);
       } catch (error) {
-        transition(state, issue.number, "NEEDS_HUMAN", { reason: error instanceof Error ? error.message : String(error) });
+        transition(state, issue.number, "MERGE_FAILED", { reason: error instanceof Error ? error.message : String(error) });
         await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
-        return { status: "NEEDS_HUMAN", state: state.stories[String(issue.number)] };
+        return { status: "MERGE_FAILED", state: state.stories[String(issue.number)] };
       }
       if (!merged.merged) {
-        transition(state, issue.number, "NEEDS_HUMAN", { reason: merged.message }); await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
-        return { status: "NEEDS_HUMAN", state: state.stories[String(issue.number)] };
+        transition(state, issue.number, "MERGE_FAILED", { reason: merged.message }); await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
+        return { status: "MERGE_FAILED", state: state.stories[String(issue.number)] };
       }
       transition(state, issue.number, "DONE", { headSha: commit.sha, reviewHeadSha: commit.sha });
       await saveState(stateFile, state); await client.closeIssue(issue.number); await mark(client, issue, "agent:done");
