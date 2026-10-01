@@ -74,3 +74,12 @@ test("inspects the diff and refuses protected or secret-like files before stagin
     await writeFile(join(directory, "TOKENS.txt"), "fixture-only\n"); await assert.rejects(() => inspectChanges(directory), /refusing to stage.*TOKENS\.txt/i);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("refuses files outside configured story scope", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-factory-scope-policy-"));
+  try {
+    await git(directory, ["init"]); await git(directory, ["config", "user.email", "test@example.invalid"]); await git(directory, ["config", "user.name", "AI Factory Test"]); await writeFile(join(directory, "README.md"), "base\n"); await git(directory, ["add", "README.md"]); await git(directory, ["commit", "-m", "base"]);
+    await writeFile(join(directory, "src.txt"), "allowed\n");
+    await assert.rejects(() => inspectChanges(directory, { allowedPaths: ["docs"] }), /out-of-scope.*src\.txt/i);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

@@ -77,6 +77,8 @@ export interface OrchestrationConfig {
   autoMerge: boolean;
   stateFile: string;
   logDirectory: string;
+  /** Optional repository-relative prefixes allowed for a story change. */
+  allowedChangePaths?: string[];
 }
 
 export interface StoryState {
@@ -89,6 +91,12 @@ export interface StoryState {
   reviewHeadSha?: string;
   updatedAt: string;
   reason?: string;
+  startedAt?: string;
+  processStatus?: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED";
+  validation?: Array<{ command: string; passed: boolean; output: string }>;
+  changedFiles?: string[];
+  sourceIssueUrl?: string;
+  pullRequestUrl?: string;
 }
 
 export interface PersistedState {

@@ -17,6 +17,7 @@ const defaults: Omit<OrchestrationConfig, "owner" | "repo"> = {
   autoMerge: false,
   stateFile: ".cache/state.json",
   logDirectory: "logs",
+  allowedChangePaths: [],
 };
 
 function positiveNumber(value: unknown, name: string): number {
@@ -41,6 +42,7 @@ export function loadConfig(filePath = process.env.AI_FACTORY_CONFIG || "config.j
     timeouts: { ...defaults.timeouts, ...source.timeouts },
   };
   if (config.autoMerge !== false && config.autoMerge !== true) throw new Error("autoMerge must be boolean");
+  if (!Array.isArray(config.allowedChangePaths) || config.allowedChangePaths.some((item) => typeof item !== "string" || !item.trim())) throw new Error("allowedChangePaths must be an array of non-empty strings");
   positiveNumber(config.maxStories, "maxStories");
   positiveNumber(config.maxFixCycles, "maxFixCycles");
   positiveNumber(config.timeouts.codexMinutes, "timeouts.codexMinutes");

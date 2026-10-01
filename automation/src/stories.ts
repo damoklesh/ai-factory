@@ -69,6 +69,23 @@ export interface StorySelection {
   contract: StoryContract;
 }
 
+/** Returns a stable, user-facing refusal reason for an explicitly requested story. */
+export function storyEligibility(issue: Issue | undefined, issues: Issue[], completed: Set<number>): string | undefined {
+  if (!issue) return "story not found";
+  if (issue.state !== "open") return `story #${issue.number} is not open (${issue.state})`;
+  if (completed.has(issue.number) || issue.labels.includes("agent:done")) return `story #${issue.number} is already merged/done`;
+  if (issue.labels.includes("agent:blocked")) return `story #${issue.number} is blocked (agent:blocked)`;
+  if (!issue.labels.includes("agent:ready")) return `story #${issue.number} is not marked agent:ready`;
+  let contract: StoryContract;
+  try { contract = parseStory(issue); } catch (error) { return error instanceof Error ? error.message : String(error); }
+  const byNumber = new Map(issues.map((item) => [item.number, item]));
+  for (const dependency of contract.dependencies) {
+    if (!byNumber.has(dependency)) return `story #${issue.number} has missing dependency #${dependency}`;
+    if (!completed.has(dependency) && !byNumber.get(dependency)?.labels.includes("agent:done")) return `story #${issue.number} has unmet dependency #${dependency}`;
+  }
+  return undefined;
+}
+
 export function validateDependencyGraph(issues: Issue[]): string[] {
   const byNumber = new Map(issues.map((issue) => [issue.number, issue]));
   const errors: string[] = [];

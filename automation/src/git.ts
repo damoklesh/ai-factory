@@ -17,7 +17,7 @@ export async function gitSha(cwd: string): Promise<string> { return git(cwd, ["r
 export async function gitRoot(cwd: string): Promise<string> { return resolve(await git(cwd, ["rev-parse", "--show-toplevel"])); }
 export async function gitStatus(cwd: string): Promise<string> { return git(cwd, ["status", "--porcelain"]); }
 export async function gitDiff(cwd: string, baseBranch: string): Promise<string> { return git(cwd, ["diff", `${baseBranch}...HEAD`]); }
-export async function inspectChanges(cwd: string, options: GitOptions = {}): Promise<string[]> {
+export async function inspectChanges(cwd: string, options: GitOptions & { allowedPaths?: string[] } = {}): Promise<string[]> {
   const sources = await Promise.all([
     git(cwd, ["diff", "--name-only", "-z"], 120_000, options),
     git(cwd, ["diff", "--cached", "--name-only", "-z"], 120_000, options),
@@ -26,11 +26,16 @@ export async function inspectChanges(cwd: string, options: GitOptions = {}): Pro
   const files = [...new Set(sources.flatMap((value) => value.split("\0").map((item) => item.trim()).filter(Boolean)))].sort();
   const denied = files.filter(deniedChange);
   if (denied.length) throw new Error(`refusing to stage protected or secret-like paths: ${denied.join(", ")}`);
+  const allowed = (options.allowedPaths || []).map(normalizePrefix).filter(Boolean);
+  if (allowed.length) {
+    const outOfScope = files.filter((file) => !allowed.some((prefix) => file.replaceAll("\\", "/").toLowerCase() === prefix || file.replaceAll("\\", "/").toLowerCase().startsWith(`${prefix}/`)));
+    if (outOfScope.length) throw new Error(`refusing to stage out-of-scope paths: ${outOfScope.join(", ")}`);
+  }
   const check = await runProcess("git", ["diff", "--check"], { cwd, timeoutMs: 120_000, env: options.env });
   if (check.code !== 0) throw new Error(`refusing to stage a malformed diff: ${check.stdout.trim() || check.stderr.trim()}`);
   return files;
 }
-export async function commitAndPush(cwd: string, branch: string, message: string, options: GitOptions = {}): Promise<{ sha: string; changed: boolean; files: string[] }> {
+export async function commitAndPush(cwd: string, branch: string, message: string, options: GitOptions & { allowedPaths?: string[] } = {}): Promise<{ sha: string; changed: boolean; files: string[] }> {
   const status = await git(cwd, ["status", "--porcelain"], 120_000, options);
   if (!status) return { sha: await gitSha(cwd), changed: false, files: [] };
   const files = await inspectChanges(cwd, options);
@@ -113,4 +118,8 @@ function matchesRepository(remote: string, repository: string): boolean {
 function deniedChange(path: string): boolean {
   const normalized = path.replaceAll("\\", "/").toLowerCase(); const name = normalized.split("/").at(-1) || normalized;
   return normalized === "agents.md" || normalized.startsWith(".agent/") || normalized.startsWith(".github/workflows/") || normalized === "automation/config.json" || /^\.env(?:\.|$)/.test(name) || /(token|credential|secret|auth)(?:s)?\.(?:txt|json|ya?ml)$/i.test(name) || /\.(?:pem|key|p12|pfx)$/i.test(name);
+}
+
+function normalizePrefix(value: string): string {
+  return value.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "").trim().toLowerCase();
 }

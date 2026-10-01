@@ -8,6 +8,7 @@ export interface GitHubClient {
   getPullRequest(number: number): Promise<PullRequest>;
   getChecks(headSha: string): Promise<CheckRun[]>;
   createPullRequest(input: { title: string; body: string; headBranch: string; baseBranch: string }): Promise<PullRequest>;
+  updatePullRequest?(number: number, input: { title: string; body: string }): Promise<PullRequest>;
   setIssueLabels(issueNumber: number, labels: string[]): Promise<void>;
   closeIssue(issueNumber: number): Promise<void>;
   comment(issueNumber: number, body: string): Promise<void>;
@@ -18,8 +19,28 @@ export function replaceAgentLabel(labels: string[], next: "agent:ready" | "agent
   return [...new Set([...labels.filter((label) => !label.startsWith("agent:")), next])];
 }
 
-export function buildPullRequestBody(issueNumber: number, branch: string): string {
-  return `AI Factory managed PR\n\n- Issue: #${issueNumber}\n- Branch: ${branch}\n- Controller: trusted-base-v1\n\nThe controller owns commit, verification, review, and merge transitions.`;
+export function buildPullRequestBody(issueNumber: number, branch: string, details: { storyId?: string; objective?: string; acceptanceCriteria?: string[]; validation?: Array<{ command: string; passed: boolean; output?: string }>; sourceIssueUrl?: string } = {}): string {
+  const criteria = details.acceptanceCriteria?.length ? details.acceptanceCriteria.map((item) => `- ${item}`).join("\n") : "- See the linked story contract";
+  const validation = details.validation?.length ? details.validation.map((item) => `- ${item.passed ? "PASS" : "FAIL"} ${item.command}${item.output ? `: ${item.output.slice(0, 500)}` : ""}`).join("\n") : "- No validation commands configured";
+  return [
+    "AI Factory managed PR",
+    "",
+    `- Story: ${details.storyId || `US-${String(issueNumber).padStart(3, "0")}`}`,
+    `- Issue: #${issueNumber}${details.sourceIssueUrl ? ` (${details.sourceIssueUrl})` : ""}`,
+    `- Branch: ${branch}`,
+    "- Controller: trusted-base-v1",
+    "",
+    "## Objective",
+    details.objective || "See the linked story contract.",
+    "",
+    "## Acceptance criteria",
+    criteria,
+    "",
+    "## Validation",
+    validation,
+    "",
+    "The controller owns commit, verification, review, and merge transitions.",
+  ].join("\n");
 }
 
 export class RestGitHubClient implements GitHubClient {
@@ -71,6 +92,10 @@ export class RestGitHubClient implements GitHubClient {
   async createPullRequest(input: { title: string; body: string; headBranch: string; baseBranch: string }): Promise<PullRequest> {
     const item = await this.request<{ number: number; title: string; body: string | null; state: "open" | "closed"; head: { ref: string; sha: string }; base: { ref: string } }>(this.path("/pulls"), { method: "POST", body: JSON.stringify({ title: input.title, body: input.body, head: input.headBranch, base: input.baseBranch }) });
     return { number: item.number, title: item.title, body: item.body || "", state: item.state, merged: false, headBranch: item.head.ref, headSha: item.head.sha, baseBranch: item.base.ref };
+  }
+  async updatePullRequest(number: number, input: { title: string; body: string }): Promise<PullRequest> {
+    const item = await this.request<{ number: number; title: string; body: string | null; state: "open" | "closed"; merged_at: string | null; head: { ref: string; sha: string }; base: { ref: string } }>(this.path(`/pulls/${number}`), { method: "PATCH", body: JSON.stringify(input) });
+    return { number: item.number, title: item.title, body: item.body || "", state: item.state, merged: Boolean(item.merged_at), headBranch: item.head.ref, headSha: item.head.sha, baseBranch: item.base.ref };
   }
 
   async setIssueLabels(issueNumber: number, labels: string[]): Promise<void> { await this.request(this.path(`/issues/${issueNumber}/labels`), { method: "PUT", body: JSON.stringify({ labels }) }); }

@@ -8,7 +8,7 @@ import { commitAndPush, createWorktree, gitDiff, gitRoot, removeWorktree, ensure
 import { backlogPath, storyIssueId, syncBacklog } from "./backlog.js";
 import { loadState, saveState, transition, canStartFix } from "./state.js";
 import { mergeReviewedPullRequest } from "./merge.js";
-import { parseStory, selectNextStory, validateDependencyGraph } from "./stories.js";
+import { parseStory, selectNextStory, storyEligibility, validateDependencyGraph } from "./stories.js";
 import { runValidationPlan, validationsPassed, waitForRequiredChecks } from "./verify.js";
 import type { Issue, OrchestrationConfig, PullRequest, StoryContract, StoryState } from "./types.js";
 
@@ -65,7 +65,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   let feedback = "";
   const previous = state.stories[String(issue.number)];
   const firstCycle = previous?.fixCycles || 0;
-  transition(state, issue.number, "IMPLEMENTING", { branch, pullRequestNumber: pullRequest?.number });
+  transition(state, issue.number, "IMPLEMENTING", { branch, pullRequestNumber: pullRequest?.number, startedAt: new Date().toISOString(), processStatus: "STARTING", sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}` });
   await saveState(stateFile, state);
   await mark(client, issue, "agent:running");
   try {
@@ -76,11 +76,14 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       await saveState(stateFile, state);
       try {
         emitOperationalEvent({ source: "developer", phase: cycle === 0 ? "IMPLEMENTING" : "FIXING", message: `Developer agent started for issue #${issue.number}, cycle ${cycle}${instructions.length ? ` with ${instructions.length} human instruction(s)` : ""}` });
+        transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { processStatus: "RUNNING", reason: feedback || undefined });
+        await saveState(stateFile, state);
         await codex.developer(storyPrompt(issue, contract, feedback, instructions), worktree.path, config.timeouts.codexMinutes * 60_000);
+        transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { processStatus: "SUCCEEDED" });
       } catch (error) {
         const kind = error instanceof CodexRunError ? error.kind : "FAILED";
         const status = kind === "AUTH" ? "PAUSED_AUTH" : kind === "QUOTA" ? "PAUSED_QUOTA" : "FAILED_INFRA";
-        transition(state, issue.number, status, { reason: error instanceof Error ? error.message : String(error) });
+        transition(state, issue.number, status, { processStatus: kind === "AUTH" || kind === "QUOTA" ? "BLOCKED" : "FAILED", reason: error instanceof Error ? error.message : String(error) });
         await saveState(stateFile, state);
         await mark(client, issue, "agent:blocked");
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], state.stories[String(issue.number)].reason || "Codex failed"));
@@ -89,6 +92,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       emitOperationalEvent({ source: "validation", phase: "TESTING", message: `Running ${config.validationCommands.length} validation and ${config.smokeCommands.length} smoke command(s)`, command: [...config.validationCommands, ...config.smokeCommands].join(" && ") });
       const plan = await runValidationPlan(config.validationCommands, config.smokeCommands, worktree.path, config.timeouts.workflowMinutes * 60_000); const validation = [...plan.validation, ...plan.smoke];
       const validationText = validation.map((item) => `${item.passed ? "PASS" : "FAIL"} ${item.command}\n${item.output}`).join("\n");
+      const validationEvidence = validation.map((item) => ({ command: item.command, passed: item.passed, output: item.output.slice(0, 4_000) }));
       if (!validationsPassed(validation)) {
         feedback = `Local validation failed:\n${validationText}`;
         transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback });
@@ -97,9 +101,11 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         continue;
       }
       emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Creating reviewed commit on ${branch}` });
-      const commit = await commitAndPush(worktree.path, branch, `feat: implement US #${issue.number}`, { env: target.env });
-      if (!pullRequest) pullRequest = await client.createPullRequest({ title: issue.title, body: buildPullRequestBody(issue.number, branch), headBranch: branch, baseBranch: config.baseBranch });
-      transition(state, issue.number, "PR_OPEN", { pullRequestNumber: pullRequest.number, headSha: commit.sha, branch, fixCycles: cycle });
+      const commit = await commitAndPush(worktree.path, branch, `feat: implement US #${issue.number}`, { env: target.env, allowedPaths: config.allowedChangePaths });
+      const body = buildPullRequestBody(issue.number, branch, { storyId: `US-${String(issue.number).padStart(3, "0")}`, objective: contract.objective, acceptanceCriteria: contract.acceptanceCriteria, validation: validationEvidence, sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}` });
+      if (!pullRequest) pullRequest = await client.createPullRequest({ title: issue.title, body, headBranch: branch, baseBranch: config.baseBranch });
+      else if (client.updatePullRequest) pullRequest = await client.updatePullRequest(pullRequest.number, { title: issue.title, body });
+      transition(state, issue.number, "PR_OPEN", { pullRequestNumber: pullRequest.number, headSha: commit.sha, branch, fixCycles: cycle, validation: validationEvidence, changedFiles: commit.files, pullRequestUrl: `https://github.com/${config.owner}/${config.repo}/pull/${pullRequest.number}`, processStatus: "SUCCEEDED" });
       await saveState(stateFile, state);
       emitOperationalEvent({ source: "github", phase: "CI", message: `Waiting for required checks on ${commit.sha.slice(0, 12)}`, activity: "WAITING_FOR_CHECKS" });
       const checks = await waitForRequiredChecks(client, commit.sha, config.requiredChecks, config.timeouts.ciMinutes * 60_000);
@@ -228,12 +234,15 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   return 0;
 }
 
-function selectExplicitStory(issues: Issue[], completed: Set<number>, storyId: string, suppliedContract?: StoryContract): { issue: Issue; contract: StoryContract } | undefined {
-  if (!suppliedContract && validateDependencyGraph(issues).length > 0) return undefined;
+export function selectExplicitStory(issues: Issue[], completed: Set<number>, storyId: string, suppliedContract?: StoryContract): { issue: Issue; contract: StoryContract } {
   const issue = issues.find((item) => storyIssueId(item)?.toUpperCase() === storyId.toUpperCase());
-  if (!issue || issue.state !== "open" || !issue.labels.includes("agent:ready") || completed.has(issue.number)) return undefined;
-  const contract = suppliedContract || parseStory(issue);
-  return contract.dependencies.every((dependency) => completed.has(dependency)) ? { issue, contract } : undefined;
+  if (!suppliedContract && validateDependencyGraph(issues).length > 0) throw new Error(`story selection refused: ${validateDependencyGraph(issues).join("; ")}`);
+  const reason = storyEligibility(issue, issues, completed);
+  if (reason) throw new Error(`story selection refused: ${reason}`);
+  const contract = suppliedContract || parseStory(issue!);
+  const unmet = contract.dependencies.find((dependency) => !completed.has(dependency));
+  if (unmet) throw new Error(`story selection refused: story #${issue!.number} has unmet dependency #${unmet}`);
+  return { issue: issue!, contract };
 }
 
 function loadExplicitContract(path: string): StoryContract {
