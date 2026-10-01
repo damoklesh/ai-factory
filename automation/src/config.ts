@@ -19,6 +19,7 @@ const defaults: Omit<OrchestrationConfig, "owner" | "repo"> = {
   timeouts: { codexMinutes: 45, ciMinutes: 20, workflowMinutes: 180 },
   maxStories: 1,
   maxFixCycles: 3,
+  maxValidationAttempts: 3,
   autoMerge: false,
   stateFile: ".cache/state.json",
   logDirectory: "logs",
@@ -84,6 +85,7 @@ export function loadConfig(filePath = process.env.AI_FACTORY_CONFIG || "config.j
   for (const [name, value] of [["developerReasoning", config.developerReasoning], ["reviewerReasoning", config.reviewerReasoning]] as const) if (!["low", "medium", "high", "xhigh"].includes(value)) throw new Error(`${name} must be low, medium, high, or xhigh`);
   positiveNumber(config.maxStories, "maxStories");
   positiveNumber(config.maxFixCycles, "maxFixCycles");
+  positiveNumber(config.maxValidationAttempts, "maxValidationAttempts");
   positiveNumber(config.timeouts.codexMinutes, "timeouts.codexMinutes");
   positiveNumber(config.timeouts.ciMinutes, "timeouts.ciMinutes");
   positiveNumber(config.timeouts.workflowMinutes, "timeouts.workflowMinutes");

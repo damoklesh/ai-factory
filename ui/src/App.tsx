@@ -119,6 +119,7 @@ function Config() {
         <h3>General</h3>
         <label>Maximum stories<input type="number" min="1" max="100" value={draft.maxStories || 1} onChange={(event) => update("maxStories", Number(event.target.value))} /></label>
         <label>Maximum fix cycles<input type="number" min="0" max="20" value={draft.maxFixCycles ?? 0} onChange={(event) => update("maxFixCycles", Number(event.target.value))} /></label>
+        <label>Maximum validation attempts<input type="number" min="1" max="20" value={draft.maxValidationAttempts ?? 3} onChange={(event) => update("maxValidationAttempts", Number(event.target.value))} /><small className="muted">Local implementation/test retries; separate from reviewer fix cycles.</small></label>
         <label>Validation commands<textarea value={(draft.validationCommands || []).join("\n")} onChange={(event) => update("validationCommands", event.target.value.split(/\r?\n/).filter(Boolean))} /></label>
         <label>Required checks<textarea value={(draft.requiredChecks || []).join("\n")} onChange={(event) => update("requiredChecks", event.target.value.split(/\r?\n/).filter(Boolean))} /></label>
         <label>Developer prompt<textarea value={draft.developerPrompt || ""} onChange={(event) => update("developerPrompt", event.target.value)} /></label>

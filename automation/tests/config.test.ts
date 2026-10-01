@@ -19,6 +19,7 @@ test("normalizes target repository configuration and keeps legacy owner/repo sup
     assert.equal(target.targetRepository, "acme/revenue");
     assert.equal(target.targetBacklogPath, "backlog");
     assert.equal(target.modelVersion, "gpt-5.6");
+    assert.equal(target.maxValidationAttempts, 3);
     assert.equal(target.developerModel, "luna");
     assert.equal(target.developerReasoning, "xhigh");
     assert.equal(target.reviewerModel, "terra");

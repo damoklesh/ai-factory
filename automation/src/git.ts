@@ -36,14 +36,31 @@ export async function inspectChanges(cwd: string, options: GitOptions & { allowe
   return files;
 }
 export async function commitAndPush(cwd: string, branch: string, message: string, options: GitOptions & { allowedPaths?: string[] } = {}): Promise<{ sha: string; changed: boolean; files: string[] }> {
+  const commit = await commitLocal(cwd, message, options);
+  if (commit.changed) await pushBranch(cwd, branch, options);
+  return commit;
+}
+
+/** Create a visible local checkpoint without publishing it to GitHub. */
+export async function commitLocal(cwd: string, message: string, options: GitOptions & { allowedPaths?: string[] } = {}): Promise<{ sha: string; changed: boolean; files: string[] }> {
   const status = await git(cwd, ["status", "--porcelain"], 120_000, options);
   if (!status) return { sha: await gitSha(cwd), changed: false, files: [] };
   const files = await inspectChanges(cwd, options);
   if (!files.length) return { sha: await gitSha(cwd), changed: false, files: [] };
   await git(cwd, ["add", "--", ...files], 120_000, options);
   await git(cwd, ["commit", "-m", message], 120_000, options);
-  await git(cwd, ["push", "--set-upstream", "origin", branch], 120_000, options);
   return { sha: await gitSha(cwd), changed: true, files };
+}
+
+export async function pushBranch(cwd: string, branch: string, options: GitOptions = {}): Promise<void> {
+  await git(cwd, ["push", "--set-upstream", "origin", branch], 120_000, options);
+}
+
+/** Collapse local implementation/fixing checkpoints into one pre-PR commit. */
+export async function squashBranch(cwd: string, baseRef: string, message: string, options: GitOptions & { allowedPaths?: string[] } = {}): Promise<{ sha: string; changed: boolean; files: string[] }> {
+  const base = await git(cwd, ["rev-parse", baseRef], 120_000, options).catch(() => git(cwd, ["rev-parse", `origin/${baseRef}`], 120_000, options));
+  await git(cwd, ["reset", "--soft", base], 120_000, options);
+  return commitLocal(cwd, message, options);
 }
 
 export interface Worktree { path: string; branch: string; reused?: boolean; }

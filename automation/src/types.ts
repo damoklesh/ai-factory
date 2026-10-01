@@ -88,6 +88,8 @@ export interface OrchestrationConfig {
   };
   maxStories: number;
   maxFixCycles: number;
+  /** Maximum local developer/test correction attempts before human intervention. */
+  maxValidationAttempts: number;
   autoMerge: boolean;
   stateFile: string;
   logDirectory: string;
@@ -109,6 +111,8 @@ export interface StoryState {
   startedAt?: string;
   processStatus?: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED";
   validation?: Array<{ command: string; passed: boolean; output: string }>;
+  validationAttempts?: number;
+  checkpointSha?: string;
   changedFiles?: string[];
   sourceIssueUrl?: string;
   pullRequestUrl?: string;

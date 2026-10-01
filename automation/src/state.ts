@@ -52,7 +52,7 @@ export function canStartFix(state: StoryState, maxFixCycles: number): boolean {
 
 export type FixCycleCause = "LOCAL_VALIDATION" | "CI_FAILURE" | "REVIEW_CHANGES_REQUESTED";
 
-/** Local implementation retries are unbounded by the review correction budget. */
+/** Local implementation retries do not consume the review correction budget; the orchestrator bounds them separately. */
 export function nextFixCycle(current: number, cause: FixCycleCause): number {
   return cause === "LOCAL_VALIDATION" ? current : current + 1;
 }

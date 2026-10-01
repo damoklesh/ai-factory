@@ -19,6 +19,7 @@ const defaults: AppConfigView = {
   requiredChecks: [],
   maxStories: 1,
   maxFixCycles: 3,
+  maxValidationAttempts: 3,
   autoMerge: false,
   stateFile: ".agent/state.json",
   developerPrompt: "Keep changes small and focused.",

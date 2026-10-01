@@ -20,6 +20,7 @@
   },
   "maxStories": 1,
   "maxFixCycles": 3,
+  "maxValidationAttempts": 3,
   "autoMerge": false,
   "stateFile": ".cache/state.json",
   "logDirectory": "logs"

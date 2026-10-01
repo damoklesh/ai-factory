@@ -61,12 +61,12 @@ The intended production flow is:
 
 1. A manual GitHub Actions workflow runs the trusted controller from the base branch.
 2. The selector validates Issue contracts, dependencies, labels, and priority.
-3. The controller creates `agent/issue-<number>` in a temporary Git worktree.
+3. The controller creates (or reuses after an interruption) `agent/issue-<number>` in a local temporary Git worktree, so the in-progress branch can be inspected while the run is active.
 4. Codex Developer receives the Issue contract on stdin and returns schema-checked JSON.
-5. The controller runs configured validation, commits, pushes, and creates or reuses one PR.
+5. The Developer makes one initial implementation, creates a local checkpoint commit before validation, and only then enters bounded fixing attempts. Once validation passes, checkpoints are squashed into the reviewed commit before it is pushed and a PR is created or reused.
 6. Required checks are polled for the exact PR head SHA.
 7. A separate Codex Reviewer evaluates the diff and validation evidence.
-8. Local validation retries stay in the Developer pre-PR phase and do not consume `maxFixCycles`. Once a PR exists, CI failures and Reviewer change requests use the bounded fix budget. `autoMerge=true` additionally rechecks the PR SHA immediately before merging.
+8. Local validation retries stay in the Developer pre-PR phase, are bounded by `maxValidationAttempts`, and do not consume `maxFixCycles`. Once a PR exists, CI failures and Reviewer change requests use the bounded fix budget. `autoMerge=true` additionally rechecks the PR SHA immediately before merging.
 9. A successful merge closes the Issue and applies `agent:done`.
 
 GitHub-hosted CI is intentionally separate from the self-hosted orchestration runner. The same runner must not be the only machine waiting for its own CI job.
@@ -139,6 +139,7 @@ Copy-Item config.example.json config.json
 | `timeouts.workflowMinutes` | Local validation command timeout | `180` |
 | `maxStories` | Stories per run | `1` |
 | `maxFixCycles` | Maximum correction cycles per story | `3` |
+| `maxValidationAttempts` | Maximum local developer/test correction attempts before human intervention; does not consume reviewer fix cycles | `3` |
 | `autoMerge` | Allow the controller to merge after all gates | `false` |
 | `stateFile` | Recoverable local state cache | `.cache/state.json` |
 | `logDirectory` | Intended log directory | `logs` |

@@ -58,6 +58,7 @@ export class ChildProcessExecutionService implements ExecutionService {
       requiredChecks: context.config.requiredChecks,
       maxStories: 1,
       maxFixCycles: context.config.maxFixCycles,
+      maxValidationAttempts: context.config.maxValidationAttempts,
       autoMerge: false,
       stateFile: join(context.stateRoot, "orchestrator-state.json"),
       logDirectory: join(context.stateRoot, "logs"),

@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { loadConfig, resolveModelId } from "./config.js";
 import { CodexRunError, CodexRunner } from "./codex.js";
 import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubClient } from "./github.js";
-import { commitAndPush, createWorktree, gitDiff, gitRoot, gitStatus, removeWorktree, ensureTargetRepository, type Worktree } from "./git.js";
+import { commitLocal, createWorktree, gitDiff, gitRoot, gitStatus, pushBranch, removeWorktree, squashBranch, ensureTargetRepository, type Worktree } from "./git.js";
 import { backlogPath, storyIssueId, syncBacklog } from "./backlog.js";
 import { loadState, saveState, transition, canStartFix, nextFixCycle } from "./state.js";
 import { evaluateMergeGate, mergeReviewedPullRequest } from "./merge.js";
@@ -73,24 +73,30 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   // at an exhausted cycle.
   let cycle = pullRequest ? previous?.fixCycles || 0 : 0;
   let implementationAttempt = 0;
+  let validationAttempts = 0;
+  let implementationNeeded = true;
   transition(state, issue.number, "IMPLEMENTING", { branch, pullRequestNumber: pullRequest?.number, fixCycles: cycle, startedAt: new Date().toISOString(), processStatus: "STARTING", sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}` });
   await saveState(stateFile, state);
   await mark(client, issue, "agent:running");
   try {
     worktree = await createWorktree(root, config.targetBranch, branch, { env: target.env });
-    if (worktree.reused) emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Resuming existing worktree for ${branch}` });
+    emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `${worktree.reused ? "Resuming" : "Created"} local worktree for ${branch} at ${worktree.path}` });
+    const existingWork = Boolean((await gitDiff(worktree.path, config.targetBranch).catch(() => "")).trim() || (await gitStatus(worktree.path, { env: target.env })).trim());
+    implementationNeeded = !pullRequest && !existingWork;
     const codex = new CodexRunner(target.controlRoot, { model: resolveModelId(config.modelVersion, config.developerModel), reasoning: config.developerReasoning }, { model: resolveModelId(config.modelVersion, config.reviewerModel), reasoning: config.reviewerReasoning });
     while (cycle <= config.maxFixCycles) {
-      const attemptId = `${config.runId || "cli"}:${issue.number}:${cycle === 0 && !pullRequest && implementationAttempt === 0 ? "implement" : "fix"}-${cycle}-${implementationAttempt}`;
+      const developerPhase = implementationNeeded ? "IMPLEMENTING" : "FIXING";
+      const attemptId = `${config.runId || "cli"}:${issue.number}:${implementationNeeded ? "implement" : "fix"}-${cycle}-${implementationAttempt}`;
       implementationAttempt += 1;
-      transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined, attemptId, fixerStatus: cycle === 0 ? undefined : "STARTING" });
+      transition(state, issue.number, developerPhase, { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined, attemptId, fixerStatus: developerPhase === "FIXING" ? "STARTING" : undefined, validationAttempts });
       await saveState(stateFile, state);
       try {
-        emitOperationalEvent({ source: "developer", phase: cycle === 0 ? "IMPLEMENTING" : "FIXING", message: `Developer agent started for issue #${issue.number}, cycle ${cycle}${instructions.length ? ` with ${instructions.length} human instruction(s)` : ""}` });
-        transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { processStatus: "RUNNING", fixerStatus: cycle === 0 ? undefined : "RUNNING", reason: feedback || undefined });
+        emitOperationalEvent({ source: "developer", phase: developerPhase, message: `Developer agent started for issue #${issue.number}: ${implementationNeeded ? "initial implementation" : "fixing the current validation/review findings"}, review cycle ${cycle}, validation attempt ${validationAttempts + 1}/${config.maxValidationAttempts}${instructions.length ? `, ${instructions.length} human instruction(s)` : ""}` });
+        transition(state, issue.number, developerPhase, { processStatus: "RUNNING", fixerStatus: developerPhase === "FIXING" ? "RUNNING" : undefined, reason: feedback || undefined });
         await saveState(stateFile, state);
-        await codex.developer(storyPrompt(issue, contract, feedback, instructions, attemptId, worktree.reused), worktree.path, config.timeouts.codexMinutes * 60_000);
-        transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { processStatus: "SUCCEEDED", fixerStatus: cycle === 0 ? undefined : "SUCCEEDED", findingDispositions: cycle === 0 ? undefined : Object.fromEntries((state.stories[String(issue.number)].reviewFindings || []).map((finding) => [finding, "FIXED" as const])) });
+        await codex.developer(storyPrompt(issue, contract, feedback, instructions, attemptId, worktree.reused || !implementationNeeded), worktree.path, config.timeouts.codexMinutes * 60_000);
+        implementationNeeded = false;
+        transition(state, issue.number, developerPhase, { processStatus: "SUCCEEDED", fixerStatus: developerPhase === "FIXING" ? "SUCCEEDED" : undefined, findingDispositions: developerPhase === "FIXING" ? Object.fromEntries((state.stories[String(issue.number)].reviewFindings || []).map((finding) => [finding, "FIXED" as const])) : undefined });
       } catch (error) {
         const kind = error instanceof CodexRunError ? error.kind : "FAILED";
         const status = kind === "AUTH" ? "PAUSED_AUTH" : kind === "QUOTA" ? "PAUSED_QUOTA" : "FAILED_INFRA";
@@ -100,20 +106,58 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], state.stories[String(issue.number)].reason || "Codex failed"));
         return { status, state: state.stories[String(issue.number)] };
       }
-      emitOperationalEvent({ source: "validation", phase: "TESTING", message: `Running ${config.validationCommands.length} validation and ${config.smokeCommands.length} smoke command(s)`, command: [...config.validationCommands, ...config.smokeCommands].join(" && ") });
+      let checkpoint: Awaited<ReturnType<typeof commitLocal>>;
+      try {
+        checkpoint = await commitLocal(worktree.path, `chore(agent): checkpoint US #${issue.number}`, { env: target.env, allowedPaths: config.allowedChangePaths });
+      } catch (error) {
+        const reason = `Local checkpoint failed: ${error instanceof Error ? error.message : String(error)}`;
+        transition(state, issue.number, "FAILED_INFRA", { processStatus: "FAILED", fixerStatus: developerPhase === "FIXING" ? "FAILED" : undefined, reason, validationAttempts });
+        await saveState(stateFile, state);
+        await mark(client, issue, "agent:blocked");
+        await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], reason));
+        return { status: "FAILED_INFRA", state: state.stories[String(issue.number)] };
+      }
+      if (checkpoint.changed) {
+        transition(state, issue.number, developerPhase, { checkpointSha: checkpoint.sha, changedFiles: checkpoint.files });
+        await saveState(stateFile, state);
+        emitOperationalEvent({ source: "git", phase: developerPhase, message: `Local checkpoint committed on ${branch} at ${checkpoint.sha.slice(0, 12)} before validation` });
+      }
+      validationAttempts += 1;
+      emitOperationalEvent({ source: "validation", phase: "TESTING", message: `Running validation attempt ${validationAttempts}/${config.maxValidationAttempts}: ${config.validationCommands.length} validation and ${config.smokeCommands.length} smoke command(s)`, command: [...config.validationCommands, ...config.smokeCommands].join(" && ") });
       const plan = await runValidationPlan(config.validationCommands, config.smokeCommands, worktree.path, config.timeouts.workflowMinutes * 60_000); const validation = [...plan.validation, ...plan.smoke];
       const validationText = validation.map((item) => `${item.passed ? "PASS" : "FAIL"} ${item.command}\n${item.output}`).join("\n");
       const validationEvidence = validation.map((item) => ({ command: item.command, passed: item.passed, output: item.output.slice(0, 4_000) }));
+      for (const item of validation) emitOperationalEvent({ source: "validation", phase: "TESTING", level: item.passed ? "INFO" : "ERROR", command: item.command, message: `${item.passed ? "PASS" : "FAIL"} ${item.command}${item.output ? `: ${item.output.slice(0, 1_500)}` : ""}` });
       if (!validationsPassed(validation)) {
         feedback = `Local validation failed:\n${validationText}`;
         // Local implementation retries happen before the PR/reviewer gate and
         // therefore do not consume the developer/reviewer fix-cycle budget.
-        transition(state, issue.number, "FIXING", { fixCycles: nextFixCycle(cycle, "LOCAL_VALIDATION"), reason: feedback, validation: validationEvidence, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
+        transition(state, issue.number, "FIXING", { fixCycles: cycle, reason: feedback, validation: validationEvidence, validationAttempts, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
         await saveState(stateFile, state);
+        if (validationAttempts >= config.maxValidationAttempts) {
+          const reason = `local validation attempts (${config.maxValidationAttempts}) exhausted; last failure: ${validationText.slice(0, 2_000)}`;
+          transition(state, issue.number, "NEEDS_HUMAN", { reason, validationAttempts, processStatus: "BLOCKED" });
+          await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
+          await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], reason));
+          return { status: "NEEDS_HUMAN", state: state.stories[String(issue.number)] };
+        }
         continue;
       }
-      emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Creating reviewed commit on ${branch}` });
-      const commit = await commitAndPush(worktree.path, branch, `feat: implement US #${issue.number}`, { env: target.env, allowedPaths: config.allowedChangePaths });
+      emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: pullRequest ? `Publishing validated checkpoint on ${branch}` : `Squashing local checkpoints into the reviewed commit on ${branch}` });
+      let commit: Awaited<ReturnType<typeof commitLocal>>;
+      try {
+        commit = pullRequest
+          ? await commitLocal(worktree.path, `fix(agent): address US #${issue.number} validation/review findings`, { env: target.env, allowedPaths: config.allowedChangePaths })
+          : await squashBranch(worktree.path, config.targetBranch, `feat: implement US #${issue.number}`, { env: target.env, allowedPaths: config.allowedChangePaths });
+        await pushBranch(worktree.path, branch, { env: target.env });
+      } catch (error) {
+        const reason = `Publishing validated changes failed: ${error instanceof Error ? error.message : String(error)}`;
+        transition(state, issue.number, "FAILED_INFRA", { processStatus: "FAILED", fixerStatus: pullRequest ? "FAILED" : undefined, reason, validationAttempts });
+        await saveState(stateFile, state);
+        await mark(client, issue, "agent:blocked");
+        await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], reason));
+        return { status: "FAILED_INFRA", state: state.stories[String(issue.number)] };
+      }
       const body = buildPullRequestBody(issue.number, branch, { storyId: `US-${String(issue.number).padStart(3, "0")}`, objective: contract.objective, acceptanceCriteria: contract.acceptanceCriteria, validation: validationEvidence, sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}` });
       if (!pullRequest) pullRequest = await client.createPullRequest({ title: issue.title, body, headBranch: branch, baseBranch: config.baseBranch });
       else if (client.updatePullRequest) pullRequest = await client.updatePullRequest(pullRequest.number, { title: issue.title, body });
