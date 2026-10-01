@@ -162,6 +162,10 @@ export interface RunSnapshot {
   processId?: number;
   resultSummary?: string;
   activity?: "IDLE" | "RUNNING" | "WAITING_FOR_INPUT" | "WAITING_FOR_CHECKS";
+  selectionPlan?: string[];
+  completedStories?: string[];
+  remainingStories?: string[];
+  stopReason?: string;
 }
 
 export interface ApprovalRequest {

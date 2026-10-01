@@ -32,7 +32,7 @@ async function fixture(execution: ExecutionService): Promise<{ controller: Local
 
 test("selects deterministically, spawns before ACTIVE, and completes visibly", async () => {
   const execution = new FakeExecution(); const { controller, target } = await fixture(execution); const run = await controller.start({ maxStories: 5, autoMerge: false, selectionMode: "auto" });
-  assert.equal(run.status, "ACTIVE"); assert.equal(run.storyId, "US-003"); assert.equal(run.maxStories, 1); assert.equal(run.processId, 4321); assert.equal(execution.contexts[0].project.targetPath, await realpath(target)); assert.notEqual(execution.contexts[0].controlRoot, execution.contexts[0].project.targetPath); assert.equal(execution.contexts[0].story.storyId, "US-003");
+  assert.equal(run.status, "ACTIVE"); assert.equal(run.storyId, "US-003"); assert.equal(run.maxStories, 5); assert.equal(run.processId, 4321); assert.equal(execution.contexts[0].project.targetPath, await realpath(target)); assert.notEqual(execution.contexts[0].controlRoot, execution.contexts[0].project.targetPath); assert.equal(execution.contexts[0].story.storyId, "US-003");
   execution.contexts[0].onEvent?.({ source: "github", phase: "CI", level: "INFO", message: "waiting for checks", activity: "WAITING_FOR_CHECKS" });
   for (let attempt = 0; attempt < 20 && !(await controller.logs(run.runId)).entries.some((entry) => entry.message === "waiting for checks"); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.match((await controller.logs(run.runId)).entries.at(-1)?.message || "", /waiting for checks/); assert.equal((await controller.run(run.runId))?.activity, "WAITING_FOR_CHECKS");
