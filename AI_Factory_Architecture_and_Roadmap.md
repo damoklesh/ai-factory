@@ -95,7 +95,7 @@ Al seleccionar proyecto, el servidor debe mostrar ruta absoluta, repositorio rem
 4. Usuario elige una historia explícita o `Auto`. La ejecución tiene máximo de historias configurable (por defecto 1), con auto-merge apagado.
 5. Controller reserva lock por proyecto, valida que no haya otro run vivo, configura directorio de trabajo y crea/recupera worktree y branch estables.
 6. Orquestador emite `run.started`, fase y eventos de proceso; Node persiste cada evento y lo envía por SSE. UI puede recuperar estado/logs por API si pierde la conexión.
-7. Codex trabaja en el worktree del proyecto destino. El motor ejecuta las validaciones detectadas/configuradas, revisa diff, genera PR si corresponde y espera checks/decisión.
+7. Codex trabaja en el worktree del proyecto destino. El motor ejecuta las validaciones detectadas/configuradas; los reintentos locales del Developer no consumen el presupuesto de correcciones. Tras crear la PR, los fallos de CI y solicitudes de cambios del Reviewer consumen el presupuesto limitado, y el motor espera checks/decisión.
 8. Si falta decisión/credencial/contexto, el estado cambia a `BLOCKED`/`NEEDS_HUMAN` con motivo accionable. La persona puede aprobar/rechazar/deferir, editar la historia con previsualización de diff o añadir instrucción acotada para la próxima invocación.
 9. Run termina como `SUCCEEDED`, `FAILED`, `BLOCKED`, `CANCELLED` o `INTERRUPTED`. UI informa historia, commit/PR/sha, validaciones y siguiente acción.
 10. Al reiniciar servidor/UI, se recuperan snapshots. Cualquier proceso cuya vida no pueda verificarse queda `INTERRUPTED` hasta reconciliar, nunca falso `ACTIVE`.

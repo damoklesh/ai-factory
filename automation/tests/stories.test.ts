@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseStory, selectNextStory, storyEligibility, validateDependencyGraph } from "../src/stories.js";
-import { emptyState, canStartFix, reconcilePullRequest, transition } from "../src/state.js";
+import { emptyState, canStartFix, nextFixCycle, reconcilePullRequest, transition } from "../src/state.js";
 import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { evaluateRequiredChecks } from "../src/checks.js";
 import { buildPullRequestBody, replaceAgentLabel } from "../src/github.js";
@@ -55,6 +55,13 @@ test("reconciles an existing stable PR and enforces fix limits", () => {
   assert.equal(reconciled?.status, "PR_OPEN");
   assert.equal(canStartFix(reconciled!, 3), true);
   assert.equal(canStartFix(reconciled!, 2), false);
+});
+
+test("does not consume review fix cycles for local validation retries", () => {
+  assert.equal(nextFixCycle(0, "LOCAL_VALIDATION"), 0);
+  assert.equal(nextFixCycle(2, "LOCAL_VALIDATION"), 2);
+  assert.equal(nextFixCycle(0, "CI_FAILURE"), 1);
+  assert.equal(nextFixCycle(2, "REVIEW_CHANGES_REQUESTED"), 3);
 });
 
 test("keeps the correction boundary explicit across a restart", () => {

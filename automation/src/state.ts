@@ -49,3 +49,10 @@ export function reconcilePullRequest(state: PersistedState, issueNumber: number,
 export function canStartFix(state: StoryState, maxFixCycles: number): boolean {
   return state.fixCycles < maxFixCycles;
 }
+
+export type FixCycleCause = "LOCAL_VALIDATION" | "CI_FAILURE" | "REVIEW_CHANGES_REQUESTED";
+
+/** Local implementation retries are unbounded by the review correction budget. */
+export function nextFixCycle(current: number, cause: FixCycleCause): number {
+  return cause === "LOCAL_VALIDATION" ? current : current + 1;
+}

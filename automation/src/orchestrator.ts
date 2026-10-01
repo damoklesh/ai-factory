@@ -6,7 +6,7 @@ import { CodexRunError, CodexRunner } from "./codex.js";
 import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubClient } from "./github.js";
 import { commitAndPush, createWorktree, gitDiff, gitRoot, removeWorktree, ensureTargetRepository, type Worktree } from "./git.js";
 import { backlogPath, storyIssueId, syncBacklog } from "./backlog.js";
-import { loadState, saveState, transition, canStartFix } from "./state.js";
+import { loadState, saveState, transition, canStartFix, nextFixCycle } from "./state.js";
 import { evaluateMergeGate, mergeReviewedPullRequest } from "./merge.js";
 import { parseStory, selectNextStory, storyEligibility, validateDependencyGraph } from "./stories.js";
 import { runValidationPlan, validationsPassed, waitForRequiredChecks } from "./verify.js";
@@ -68,15 +68,20 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   let pullRequest: PullRequest | undefined = (await client.listPullRequests(branch))[0];
   let feedback = "";
   const previous = state.stories[String(issue.number)];
-  const firstCycle = previous?.fixCycles || 0;
-  transition(state, issue.number, "IMPLEMENTING", { branch, pullRequestNumber: pullRequest?.number, startedAt: new Date().toISOString(), processStatus: "STARTING", sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}` });
+  // Fix cycles measure developer/reviewer iterations after a PR exists. A stale
+  // local-only state must never consume that budget or make the first PR start
+  // at an exhausted cycle.
+  let cycle = pullRequest ? previous?.fixCycles || 0 : 0;
+  let implementationAttempt = 0;
+  transition(state, issue.number, "IMPLEMENTING", { branch, pullRequestNumber: pullRequest?.number, fixCycles: cycle, startedAt: new Date().toISOString(), processStatus: "STARTING", sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}` });
   await saveState(stateFile, state);
   await mark(client, issue, "agent:running");
   try {
     worktree = await createWorktree(root, config.targetBranch, branch, { env: target.env });
     const codex = new CodexRunner(target.controlRoot, { model: config.developerModel, reasoning: config.developerReasoning }, { model: config.reviewerModel, reasoning: config.reviewerReasoning });
-    for (let cycle = firstCycle; cycle <= config.maxFixCycles; cycle += 1) {
-      const attemptId = `${config.runId || "cli"}:${issue.number}:${cycle === 0 ? "implement" : "fix"}-${cycle}`;
+    while (cycle <= config.maxFixCycles) {
+      const attemptId = `${config.runId || "cli"}:${issue.number}:${cycle === 0 && !pullRequest && implementationAttempt === 0 ? "implement" : "fix"}-${cycle}-${implementationAttempt}`;
+      implementationAttempt += 1;
       transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined, attemptId, fixerStatus: cycle === 0 ? undefined : "STARTING" });
       await saveState(stateFile, state);
       try {
@@ -100,9 +105,10 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       const validationEvidence = validation.map((item) => ({ command: item.command, passed: item.passed, output: item.output.slice(0, 4_000) }));
       if (!validationsPassed(validation)) {
         feedback = `Local validation failed:\n${validationText}`;
-        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
+        // Local implementation retries happen before the PR/reviewer gate and
+        // therefore do not consume the developer/reviewer fix-cycle budget.
+        transition(state, issue.number, "FIXING", { fixCycles: nextFixCycle(cycle, "LOCAL_VALIDATION"), reason: feedback, validation: validationEvidence, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
         await saveState(stateFile, state);
-        if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         continue;
       }
       emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Creating reviewed commit on ${branch}` });
@@ -116,10 +122,11 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       const checks = await waitForRequiredChecks(client, commit.sha, config.requiredChecks, config.timeouts.ciMinutes * 60_000);
       if (checks.decision === "FAIL") {
         feedback = config.requiredChecks.length ? `Required CI checks failed or timed out for SHA ${commit.sha}.` : "No required checks configured; configure at least one required check before merge.";
-        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
+        transition(state, issue.number, "FIXING", { fixCycles: nextFixCycle(cycle, "CI_FAILURE"), reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
         await saveState(stateFile, state);
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
+        cycle = nextFixCycle(cycle, "CI_FAILURE");
         continue;
       }
       transition(state, issue.number, "REVIEWING", { headSha: commit.sha });
@@ -163,10 +170,11 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         feedback = review.findings.join("; ") || "Reviewer requested changes";
         transition(state, issue.number, "REVIEW_CHANGES_REQUESTED", { reason: feedback });
         await saveState(stateFile, state);
-        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
+        transition(state, issue.number, "FIXING", { fixCycles: nextFixCycle(cycle, "REVIEW_CHANGES_REQUESTED"), reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
         await saveState(stateFile, state);
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
+        cycle = nextFixCycle(cycle, "REVIEW_CHANGES_REQUESTED");
         continue;
       }
       transition(state, issue.number, "REVIEW_APPROVED", { reviewHeadSha: commit.sha });

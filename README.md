@@ -66,7 +66,7 @@ The intended production flow is:
 5. The controller runs configured validation, commits, pushes, and creates or reuses one PR.
 6. Required checks are polled for the exact PR head SHA.
 7. A separate Codex Reviewer evaluates the diff and validation evidence.
-8. Review/CI failures use the bounded fix budget. `autoMerge=true` additionally rechecks the PR SHA immediately before merging.
+8. Local validation retries stay in the Developer pre-PR phase and do not consume `maxFixCycles`. Once a PR exists, CI failures and Reviewer change requests use the bounded fix budget. `autoMerge=true` additionally rechecks the PR SHA immediately before merging.
 9. A successful merge closes the Issue and applies `agent:done`.
 
 GitHub-hosted CI is intentionally separate from the self-hosted orchestration runner. The same runner must not be the only machine waiting for its own CI job.
