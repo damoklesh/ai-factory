@@ -28,6 +28,8 @@ test("parses and rejects malformed story contracts", () => {
 });
 
 test("covers all required check outcomes", () => {
+  assert.equal(evaluateRequiredChecks([], [], "sha").decision, "FAIL");
+  assert.deepEqual(evaluateRequiredChecks([], [], "sha").missing, ["requiredChecks"]);
   assert.equal(evaluateRequiredChecks([], ["CI"], "sha").decision, "WAIT");
   assert.equal(evaluateRequiredChecks([{ name: "CI", status: "queued", conclusion: null, headSha: "sha" }], ["CI"], "sha").decision, "WAIT");
   assert.equal(evaluateRequiredChecks([{ name: "CI", status: "completed", conclusion: "cancelled", headSha: "sha" }], ["CI"], "sha").decision, "FAIL");

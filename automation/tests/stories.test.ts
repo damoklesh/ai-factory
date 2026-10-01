@@ -100,4 +100,5 @@ test("merge gate requires current review, green current-SHA checks and no blocke
   assert.match(evaluateMergeGate({ currentSha: "new", reviewedSha: "old", reviewDecision: "PASS", checks, requiredChecks: ["CI"] }).reason || "", /stale/);
   assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [], requiredChecks: ["CI"] }).reason || "", /missing/);
   assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], unresolvedBlockingComments: 1 }).reason || "", /unresolved/);
+  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [], requiredChecks: [] }).reason || "", /no required checks configured/i);
 });

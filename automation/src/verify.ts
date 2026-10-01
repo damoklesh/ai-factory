@@ -20,7 +20,7 @@ export async function runValidationPlan(validationCommands: string[], smokeComma
 export function validationsPassed(results: VerificationResult[]): boolean { return results.every((result) => result.passed); }
 
 export async function waitForRequiredChecks(client: GitHubClient, headSha: string, requiredChecks: string[], timeoutMs: number, pollMs = 5_000): Promise<{ checks: CheckRun[]; decision: "PASS" | "FAIL" }> {
-  if (requiredChecks.length === 0) return { checks: [], decision: "PASS" };
+  if (requiredChecks.length === 0) return { checks: [], decision: "FAIL" };
   const deadline = Date.now() + timeoutMs;
   let checks: CheckRun[] = [];
   while (Date.now() <= deadline) {

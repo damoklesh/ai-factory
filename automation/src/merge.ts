@@ -5,6 +5,7 @@ export interface MergeGateInput { currentSha: string; reviewedSha?: string; revi
 export interface MergeGateResult { ready: boolean; reason?: string; }
 
 export function evaluateMergeGate(input: MergeGateInput): MergeGateResult {
+  if (input.requiredChecks.length === 0) return { ready: false, reason: "no required checks configured; configure at least one required check before proceeding" };
   if (!input.reviewedSha || input.reviewedSha !== input.currentSha) return { ready: false, reason: "review is stale or missing for current SHA" };
   if (input.reviewDecision !== "PASS") return { ready: false, reason: `review decision is ${input.reviewDecision}` };
   const current = input.checks.filter((check) => check.headSha === input.currentSha);
