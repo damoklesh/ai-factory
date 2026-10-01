@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evaluateRequiredChecks } from "../src/checks.js";
@@ -8,7 +8,7 @@ import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { emptyState, loadState, saveState, transition } from "../src/state.js";
 import { parseStory } from "../src/stories.js";
 import { runProcess } from "../src/processes.js";
-import { runValidation, runValidationPlan, validationsPassed } from "../src/verify.js";
+import { dependencyInstallCommand, runValidation, runValidationPlan, validationsPassed } from "../src/verify.js";
 import { CodexRunError, CodexRunner } from "../src/codex.js";
 import type { Issue } from "../src/types.js";
 
@@ -105,6 +105,16 @@ test("runs deterministic validation commands and reports failures", async () => 
   const fail = await runValidation(["node -e \"process.stderr.write('bad'); process.exit(2)\""], cwd, 5_000);
   assert.equal(validationsPassed(fail), false);
   assert.match(fail[0].output, /bad/);
+});
+
+test("selects a lockfile-aware dependency bootstrap for clean worktrees", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "ai-factory-dependencies-"));
+  try {
+    await writeFile(join(cwd, "package.json"), JSON.stringify({ name: "fixture" })); await writeFile(join(cwd, "package-lock.json"), "{}\n");
+    assert.equal(await dependencyInstallCommand(cwd), "npm ci");
+    await mkdir(join(cwd, "node_modules"));
+    assert.equal(await dependencyInstallCommand(cwd), undefined);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
 test("runs configured smoke commands only after deterministic validation passes", async () => { const cwd = await mkdtemp(join(tmpdir(), "ai-factory-smoke-")); const plan = await runValidationPlan(["node -e \"process.stdout.write('unit')\""], ["node -e \"process.stdout.write('smoke')\""], cwd, 5_000); assert.equal(plan.validation[0].output, "unit"); assert.equal(plan.smoke[0].output, "smoke"); const failed = await runValidationPlan(["node -e \"process.exit(1)\""], ["node -e \"process.stdout.write('should-not-run')\""], cwd, 5_000); assert.equal(failed.smoke.length, 0); });

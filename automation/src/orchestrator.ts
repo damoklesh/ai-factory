@@ -9,7 +9,7 @@ import { backlogPath, storyIssueId, syncBacklog } from "./backlog.js";
 import { loadState, saveState, transition, canStartFix, nextFixCycle, shouldRunDeveloper } from "./state.js";
 import { evaluateMergeGate, mergeReviewedPullRequest } from "./merge.js";
 import { parseStory, selectNextStory, storyEligibility, validateDependencyGraph } from "./stories.js";
-import { runValidationPlan, validationsPassed, waitForRequiredChecks } from "./verify.js";
+import { dependencyInstallCommand, installDependencies, runValidationPlan, validationsPassed, waitForRequiredChecks } from "./verify.js";
 import type { Issue, OrchestrationConfig, PullRequest, StoryContract, StoryState } from "./types.js";
 
 export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; storyId?: string; runId?: string; resume: boolean; storyContractPath?: string; instructionPath?: string; }
@@ -83,6 +83,17 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   try {
     worktree = await createWorktree(root, config.targetBranch, branch, { env: target.env });
     emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `${worktree.reused ? "Resuming" : "Created"} local worktree for ${branch} at ${worktree.path}` });
+    const dependencyCommand = await dependencyInstallCommand(worktree.path);
+    if (dependencyCommand) {
+      emitOperationalEvent({ source: "validation", phase: "TESTING", message: `Installing dependencies before validation with ${dependencyCommand}`, command: dependencyCommand });
+      try { await installDependencies(worktree.path, dependencyCommand, config.timeouts.workflowMinutes * 60_000); }
+      catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        transition(state, issue.number, "FAILED_INFRA", { processStatus: "FAILED", reason, validationAttempts });
+        await saveState(stateFile, state); await mark(client, issue, "agent:blocked"); await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], reason));
+        return { status: "FAILED_INFRA", state: state.stories[String(issue.number)] };
+      }
+    }
     // A PR is the delivery boundary. On restart, do not invoke the developer
     // again just because the controller was interrupted while waiting for CI or
     // the reviewer. Developer work is requested only for a new story, or for a
