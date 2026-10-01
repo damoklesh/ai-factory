@@ -163,7 +163,15 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       else if (client.updatePullRequest) pullRequest = await client.updatePullRequest(pullRequest.number, { title: issue.title, body });
       transition(state, issue.number, "PR_OPEN", { pullRequestNumber: pullRequest.number, headSha: commit.sha, branch, fixCycles: cycle, validation: validationEvidence, changedFiles: commit.files, pullRequestUrl: `https://github.com/${config.owner}/${config.repo}/pull/${pullRequest.number}`, processStatus: "SUCCEEDED" });
       await saveState(stateFile, state);
-      emitOperationalEvent({ source: "github", phase: "CI", message: `Waiting for required checks on ${commit.sha.slice(0, 12)}`, activity: "WAITING_FOR_CHECKS" });
+      emitOperationalEvent({
+        source: "github",
+        phase: "CI",
+        level: config.requiredChecks.length ? "INFO" : "WARN",
+        message: config.requiredChecks.length
+          ? `Waiting for required checks on ${commit.sha.slice(0, 12)}`
+          : `Bootstrap mode: no required checks configured for ${commit.sha.slice(0, 12)}; continuing to reviewer, merge remains disabled`,
+        activity: config.requiredChecks.length ? "WAITING_FOR_CHECKS" : "RUNNING",
+      });
       const checks = await waitForRequiredChecks(client, commit.sha, config.requiredChecks, config.timeouts.ciMinutes * 60_000);
       if (checks.decision === "FAIL") {
         feedback = config.requiredChecks.length ? `Required CI checks failed or timed out for SHA ${commit.sha}.` : "No required checks configured; configure at least one required check before merge.";

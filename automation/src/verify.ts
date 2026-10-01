@@ -20,7 +20,10 @@ export async function runValidationPlan(validationCommands: string[], smokeComma
 export function validationsPassed(results: VerificationResult[]): boolean { return results.every((result) => result.passed); }
 
 export async function waitForRequiredChecks(client: GitHubClient, headSha: string, requiredChecks: string[], timeoutMs: number, pollMs = 5_000): Promise<{ checks: CheckRun[]; decision: "PASS" | "FAIL" }> {
-  if (requiredChecks.length === 0) return { checks: [], decision: "FAIL" };
+  // Bootstrap projects may not have a GitHub Actions workflow yet. Let the
+  // reviewer inspect the PR in that mode, while evaluateMergeGate() keeps the
+  // PR in READY_FOR_MERGE and prevents both manual and automatic merging.
+  if (requiredChecks.length === 0) return { checks: [], decision: "PASS" };
   const deadline = Date.now() + timeoutMs;
   let checks: CheckRun[] = [];
   while (Date.now() <= deadline) {

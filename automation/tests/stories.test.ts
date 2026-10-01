@@ -108,6 +108,15 @@ test("waits for current-SHA CI and blocks a changed PR head at merge", async () 
   await assert.rejects(() => mergeReviewedPullRequest(client, 12, "reviewed"), /stale/);
 });
 
+test("allows reviewer bootstrap mode without querying GitHub checks", async () => {
+  let queried = false;
+  const client = { async getChecks() { queried = true; return []; } } as unknown as GitHubClient;
+  const result = await waitForRequiredChecks(client, "sha", [], 1, 0);
+  assert.equal(result.decision, "PASS");
+  assert.deepEqual(result.checks, []);
+  assert.equal(queried, false);
+});
+
 test("merge gate requires current review, green current-SHA checks and no blockers", () => {
   const checks = [{ name: "CI", status: "completed" as const, conclusion: "success", headSha: "sha" }];
   const noThreads = { available: true, threads: [] };

@@ -66,7 +66,7 @@ The intended production flow is:
 5. The Developer makes one initial implementation, creates a local checkpoint commit before validation, and only then enters bounded fixing attempts. Once validation passes, checkpoints are squashed into the reviewed commit before it is pushed and a PR is created or reused.
 6. Required checks are polled for the exact PR head SHA.
 7. A separate Codex Reviewer evaluates the diff and validation evidence.
-8. Local validation retries stay in the Developer pre-PR phase, are bounded by `maxValidationAttempts`, and do not consume `maxFixCycles`. Once a PR exists, CI failures and Reviewer change requests use the bounded fix budget. `autoMerge=true` additionally rechecks the PR SHA immediately before merging.
+8. Local validation retries stay in the Developer pre-PR phase, are bounded by `maxValidationAttempts`, and do not consume `maxFixCycles`. Once a PR exists, CI failures and Reviewer change requests use the bounded fix budget. If `requiredChecks` is empty, bootstrap mode skips the CI wait so the Reviewer can inspect the PR, but the merge gate remains closed. `autoMerge=true` still cannot merge without configured required checks and a green current-SHA result.
 9. A successful merge closes the Issue and applies `agent:done`.
 
 GitHub-hosted CI is intentionally separate from the self-hosted orchestration runner. The same runner must not be the only machine waiting for its own CI job.
@@ -133,7 +133,7 @@ Copy-Item config.example.json config.json
 | `developerReasoning` / `reviewerReasoning` | Reasoning effort per agent | Developer `xhigh`; Reviewer `high` (also supports `low`/`medium`) |
 | `validationCommands` | Commands repeated by the controller in the worktree | project-specific, e.g. `npm test` |
 | `smokeCommands` | Project smoke commands | run after deterministic validation succeeds, with the same workflow timeout |
-| `requiredChecks` | Exact GitHub check names required for the PR SHA | project-specific, e.g. `automation` |
+| `requiredChecks` | Exact GitHub check names required for the PR SHA; leave empty only for reviewer-only bootstrap mode | project-specific, e.g. `automation` |
 | `timeouts.codexMinutes` | Per Codex invocation timeout | `45` |
 | `timeouts.ciMinutes` | Required-check polling timeout | `20` |
 | `timeouts.workflowMinutes` | Local validation command timeout | `180` |
