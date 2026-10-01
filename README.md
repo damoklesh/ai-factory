@@ -223,6 +223,61 @@ runs-on: [self-hosted, linux, ai-local]
 
 Therefore a native Windows runner is not enough for the current workflow. On a Windows machine, use WSL2 with Ubuntu, or change the workflow deliberately after human review.
 
+#### Arrancar un runner ya instalado en Windows
+
+Si ya has instalado y registrado el runner directamente en Windows, no tienes que ejecutar otra vez `config.cmd`. Para arrancarlo manualmente:
+
+1. Abre **PowerShell** con el mismo usuario que registró el runner.
+2. Ve a la carpeta donde lo instalaste, por ejemplo:
+
+```powershell
+cd C:\actions-runner
+```
+
+3. Arráncalo:
+
+```powershell
+.\run.cmd
+```
+
+4. Mantén esa ventana abierta. En GitHub debe aparecer como **Idle** en:
+
+```text
+Settings > Actions > Runners
+```
+
+Mientras el proceso esté ejecutándose, el runner puede recibir trabajos. Para detenerlo, pulsa `Ctrl+C` en esa ventana.
+
+También puedes instalarlo como servicio de Windows para que arranque automáticamente:
+
+```powershell
+cd C:\actions-runner
+.\svc.cmd install
+.\svc.cmd start
+Get-Service | Where-Object { $_.Name -like '*actions.runner*' }
+```
+
+Para detener o desinstalar el servicio:
+
+```powershell
+.\svc.cmd stop
+.\svc.cmd uninstall
+```
+
+Importante: el workflow actual solicita Linux:
+
+```yaml
+runs-on: [self-hosted, linux, ai-local]
+```
+
+Por tanto, un runner nativo de Windows permanecerá disponible pero no recibirá ese workflow. Para usarlo hay que cambiar deliberadamente el workflow a, por ejemplo:
+
+```yaml
+runs-on: [self-hosted, windows, ai-local]
+```
+
+Ese cambio requiere revisión porque los comandos del workflow deben adaptarse de Bash (`./run.sh`) a PowerShell/Windows (`run.cmd`). El runner de GitHub Actions y el orquestador local (`npm run orchestrate`) son procesos distintos; arrancar uno no arranca automáticamente el otro.
+
 ### 1. Install WSL2 on Windows
 
 Run PowerShell as Administrator:
