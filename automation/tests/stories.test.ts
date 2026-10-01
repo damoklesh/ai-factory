@@ -28,6 +28,13 @@ test("parses headings emitted by the GitHub issue form", () => {
   assert.equal(parseStory(formIssue).priority, 1);
 });
 
+test("accepts the documented User Story heading as the objective", () => {
+  const standard = issue(4, 1);
+  standard.body = standard.body.replace("## Objective", "## User Story");
+  assert.equal(parseStory(standard).objective, "As a user I want story 4.");
+  assert.equal(selectNextStory([standard], new Set())?.issue.number, 4);
+});
+
 test("blocks missing and cyclic dependencies", () => {
   assert.match(validateDependencyGraph([issue(2, 1, "#9")])[0], /missing #9/);
   assert.ok(validateDependencyGraph([issue(1, 1, "#2"), issue(2, 2, "#1")]).some((item) => item.includes("cycle")));

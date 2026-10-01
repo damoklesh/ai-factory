@@ -3,6 +3,7 @@ import type { Issue, StoryContract } from "./types.js";
 const headings: Record<string, keyof StoryContract> = {
   objetivo: "objective",
   objective: "objective",
+  "user story": "objective",
   "criterios de aceptación": "acceptanceCriteria",
   "criterios de aceptacion": "acceptanceCriteria",
   "acceptance criteria": "acceptanceCriteria",
