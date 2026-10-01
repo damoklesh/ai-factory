@@ -132,7 +132,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       if (resumeChecks.decision === "PASS") {
         skipLocalValidation = true;
         emitOperationalEvent({ source: "orchestrator", phase: "REVIEWING", message: `PR #${pullRequest.number} already passed required checks for ${pullRequest.headSha.slice(0, 12)}; proceeding directly to reviewer`, activity: "RUNNING" });
-      } else {
+      } else if (resumeChecks.decision === "FAILED") {
         feedback = `Required CI checks failed or timed out for existing PR SHA ${pullRequest.headSha}.`;
         const nextCycle = nextFixCycle(cycle, "CI_FAILURE");
         if (nextCycle > config.maxFixCycles) {
@@ -143,6 +143,11 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         cycle = nextCycle; developerNeeded = true;
         transition(state, issue.number, "FIXING", { fixCycles: cycle, fixCause: "CI_FAILURE", reason: feedback, validationAttempts });
         await saveState(stateFile, state);
+      } else {
+        const reason = `CI for existing PR SHA ${pullRequest.headSha} is ${resumeChecks.decision.toLowerCase()}; resume after GitHub Actions has completed.`;
+        transition(state, issue.number, "VERIFYING", { processStatus: "BLOCKED", reason, validationAttempts });
+        await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
+        return { status: "VERIFYING", state: state.stories[String(issue.number)] };
       }
     }
     while (cycle <= config.maxFixCycles) {
@@ -271,7 +276,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], reason));
         return { status: "FAILED_INFRA", state: state.stories[String(issue.number)] };
       }
-      if (checks.decision === "FAIL") {
+      if (checks.decision === "FAILED") {
         feedback = config.requiredChecks.length ? `Required CI checks failed for published SHA ${pullRequest.headSha}.` : "No required checks configured; configure at least one required check before merge.";
         const nextCycle = nextFixCycle(cycle, "CI_FAILURE");
         if (nextCycle > config.maxFixCycles) break;
@@ -281,6 +286,12 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
         cycle = nextCycle; validationAttempts = 0;
         continue;
+      }
+      if (checks.decision !== "PASS") {
+        const reason = `CI for published PR SHA ${pullRequest.headSha} is ${checks.decision.toLowerCase()}; resume after GitHub Actions has completed.`;
+        transition(state, issue.number, "VERIFYING", { processStatus: "BLOCKED", reason, validationAttempts });
+        await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
+        return { status: "VERIFYING", state: state.stories[String(issue.number)] };
       }
       }
       transition(state, issue.number, "REVIEWING", { headSha: pullRequest.headSha });

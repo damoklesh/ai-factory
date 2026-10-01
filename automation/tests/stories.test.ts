@@ -81,10 +81,20 @@ test("resumes an existing PR at review without another developer cycle", () => {
   assert.equal(shouldRunDeveloper(true, { ...stateStory("REVIEW_CHANGES_REQUESTED") }), true);
   assert.equal(shouldRunDeveloper(true, { ...stateStory("FIXING"), fixCause: "LOCAL_VALIDATION" }), false);
   assert.equal(shouldRunDeveloper(true, { ...stateStory("FIXING"), fixCause: "REVIEW_CHANGES_REQUESTED" }), true);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("FIXING"), fixCause: "CI_FAILURE" }), true);
   assert.equal(shouldRunDeveloper(true, { ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix this"] }, false), false);
   assert.equal(shouldRunDeveloper(true, { ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix this"] }, true), true);
   assert.match(feedbackForResume({ ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix README", "fix E2E port"] }, true), /fix README/);
   assert.equal(feedbackForResume({ ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix this"] }, false), "");
+});
+
+test("keeps CI missing, pending timeout, and failed outcomes distinct", async () => {
+  const missing = await waitForRequiredChecks({ async getChecks() { return []; } } as unknown as GitHubClient, "sha", ["CI"], 20, 0);
+  const pending = await waitForRequiredChecks({ async getChecks() { return [{ name: "CI", status: "queued", conclusion: null, headSha: "sha" }] } } as unknown as GitHubClient, "sha", ["CI"], 20, 0);
+  const failed = await waitForRequiredChecks({ async getChecks() { return [{ name: "CI", status: "completed", conclusion: "failure", headSha: "sha" }] } } as unknown as GitHubClient, "sha", ["CI"], 20, 0);
+  assert.equal(missing.decision, "MISSING");
+  assert.equal(pending.decision, "TIMEOUT");
+  assert.equal(failed.decision, "FAILED");
 });
 
 test("allows only an explicit resume to reopen a blocked story", () => {

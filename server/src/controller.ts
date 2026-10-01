@@ -359,7 +359,7 @@ export class LocalController {
     this.stories = this.stories.map((story) => {
       const state = states.find((item) => item.issueNumber === story.githubIssueNumber);
       if (!state) return story;
-      const waiting = ["PR_OPEN", "READY_FOR_MERGE", "MERGE_PENDING_APPROVAL", "WAITING_FOR_CI"].includes(state.status);
+      const waiting = ["PR_OPEN", "VERIFYING", "READY_FOR_MERGE", "MERGE_PENDING_APPROVAL", "WAITING_FOR_CI"].includes(state.status);
       const active = ["IMPLEMENTING", "FIXING", "REVIEWING", "REVIEW_CHANGES_REQUESTED", "REVALIDATING"].includes(state.status);
       const blocked = ["FAILED_INFRA", "MERGE_FAILED", "NEEDS_HUMAN", "REVIEW_FAILED", "PAUSED_AUTH", "PAUSED_QUOTA"].includes(state.status);
       const stage = workflowStageFor(state.status);
@@ -385,7 +385,7 @@ export class LocalController {
       const lostProcess = story.agentProcess?.status === "LOST";
       // A merge-pending PR requires a human GitHub action, not another agent
       // invocation. Other durable PR stages remain recoverable with Resume.
-      const recoverablePrStage = ["PR_OPEN", "QUEUED_FOR_REVIEW", "READY_FOR_MERGE", "MERGE_PENDING_APPROVAL", "WAITING_FOR_CI"].includes(story.agentStatus || "");
+      const recoverablePrStage = ["PR_OPEN", "VERIFYING", "QUEUED_FOR_REVIEW", "READY_FOR_MERGE", "MERGE_PENDING_APPROVAL", "WAITING_FOR_CI"].includes(story.agentStatus || "");
       const awaitingHumanMerge = story.agentStatus === "MERGE_PENDING_APPROVAL";
       const blocked = story.executionStatus === "BLOCKED" || Boolean(recoveredRun) || lostProcess || recoverablePrStage;
       const interruptionReason = recoveredRun?.resultSummary || story.agentReason || (awaitingHumanMerge ? "Merge the approved pull request in GitHub, then refresh this page." : lostProcess ? "The orchestrator process is no longer running; resume to continue." : undefined);
@@ -411,7 +411,7 @@ export class LocalController {
 }
 
 function statusFor(story: StoryDetail): "pending" | "active" | "blocked" | "done" { if (story.deliveryStatus === "MERGED") return "done"; if (story.dependencyError || story.blockedReason) return "blocked"; if (["ACTIVE", "PAUSE_REQUESTED", "PAUSED", "STOP_REQUESTED"].includes(story.executionStatus)) return "active"; return "pending"; }
-function phaseForAgentStatus(status?: string): RunSnapshot["phase"] { if (status === "FIXING") return "FIXING"; if (status === "REVIEWING") return "REVIEWING"; if (status === "PR_OPEN") return "CI"; if (status === "DONE") return "FINISHED"; if (status?.startsWith("PAUSED")) return "PAUSED"; return "IMPLEMENTING"; }
+function phaseForAgentStatus(status?: string): RunSnapshot["phase"] { if (status === "FIXING") return "FIXING"; if (status === "REVIEWING") return "REVIEWING"; if (status === "PR_OPEN" || status === "VERIFYING") return "CI"; if (status === "DONE") return "FINISHED"; if (status?.startsWith("PAUSED")) return "PAUSED"; return "IMPLEMENTING"; }
 function workflowStageFor(status: string): WorkflowStage | undefined {
   const map: Record<string, WorkflowStage> = { IMPLEMENTING: "IMPLEMENTING", PR_OPEN: "PR_OPEN", QUEUED_FOR_REVIEW: "PR_OPEN", REVIEWING: "REVIEWING", REVIEW_CHANGES_REQUESTED: "REVIEW_CHANGES_REQUESTED", FIXING: "FIXING_REVIEW", REVALIDATING: "REVALIDATING", VERIFYING: "WAITING_FOR_CI", READY_FOR_MERGE: "READY_FOR_MERGE", MERGE_PENDING_APPROVAL: "MERGE_PENDING_APPROVAL", DONE: "MERGED", NEEDS_HUMAN: "NEEDS_HUMAN", REVIEW_FAILED: "FAILED", MERGE_FAILED: "FAILED", FAILED_INFRA: "FAILED", PAUSED_AUTH: "NEEDS_HUMAN", PAUSED_QUOTA: "NEEDS_HUMAN" };
   return map[status];

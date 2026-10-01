@@ -43,19 +43,26 @@ export async function installDependencies(cwd: string, command: string, timeoutM
   if (result.code !== 0 || result.timedOut) throw new Error(`dependency installation failed (${command}): ${`${result.stdout}${result.stderr}`.trim().slice(-4_000) || "no output"}`);
 }
 
-export async function waitForRequiredChecks(client: GitHubClient, headSha: string, requiredChecks: string[], timeoutMs: number, pollMs = 5_000): Promise<{ checks: CheckRun[]; decision: "PASS" | "FAIL" }> {
+export type RequiredCheckWaitDecision = "PASS" | "FAILED" | "PENDING" | "MISSING" | "TIMEOUT";
+
+export async function waitForRequiredChecks(client: GitHubClient, headSha: string, requiredChecks: string[], timeoutMs: number, pollMs = 5_000): Promise<{ checks: CheckRun[]; decision: RequiredCheckWaitDecision }> {
   // Bootstrap projects may not have a GitHub Actions workflow yet. Let the
   // reviewer inspect the PR in that mode, while evaluateMergeGate() keeps the
   // PR in READY_FOR_MERGE and prevents both manual and automatic merging.
   if (requiredChecks.length === 0) return { checks: [], decision: "PASS" };
   const deadline = Date.now() + timeoutMs;
   let checks: CheckRun[] = [];
+  let sawPending = false;
   while (Date.now() <= deadline) {
     checks = await client.getChecks(headSha);
     const result = evaluateRequiredChecks(checks, requiredChecks, headSha);
     if (result.decision === "PASS") return { checks, decision: "PASS" };
-    if (result.decision === "FAIL") return { checks, decision: "FAIL" };
+    if (result.decision === "FAIL") return { checks, decision: "FAILED" };
+    const current = checks.filter((check) => check.headSha === headSha);
+    sawPending ||= current.some((check) => requiredChecks.some((name) => check.name === name) && check.status !== "completed");
     await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(0, deadline - Date.now()))));
   }
-  return { checks, decision: "FAIL" };
+  const result = evaluateRequiredChecks(checks, requiredChecks, headSha);
+  if (sawPending) return { checks, decision: "TIMEOUT" };
+  return { checks, decision: result.missing.length ? "MISSING" : "PENDING" };
 }
