@@ -110,6 +110,10 @@ export interface StoryState {
   branch: string;
   pullRequestNumber?: number;
   headSha?: string;
+  localValidatedSha?: string;
+  publishedSha?: string;
+  ciPassedSha?: string;
+  reviewedSha?: string;
   fixCycles: number;
   reviewHeadSha?: string;
   updatedAt: string;

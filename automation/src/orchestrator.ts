@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { loadConfig, resolveModelId } from "./config.js";
 import { CodexRunError, CodexRunner } from "./codex.js";
 import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubClient } from "./github.js";
-import { commitLocal, createWorktree, gitDiff, gitRoot, gitSha, gitStatus, pushBranch, removeWorktree, resetStoryWorkspace, squashBranch, ensureTargetRepository, type Worktree } from "./git.js";
+import { commitLocal, createWorktree, gitDiff, gitRoot, gitSha, gitStatus, publishValidatedHead, removeWorktree, resetStoryWorkspace, squashBranch, ensureTargetRepository, type Worktree } from "./git.js";
 import { backlogPath, storyIssueId, syncBacklog } from "./backlog.js";
 import { loadState, saveState, transition, nextFixCycle, shouldRunDeveloper } from "./state.js";
 import { evaluateMergeGate, mergeReviewedPullRequest } from "./merge.js";
@@ -90,7 +90,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   let implementationAttempt = 0;
   let validationAttempts = manualContinuation ? 0 : previous?.validationAttempts || 0;
   let developerNeeded = shouldRunDeveloper(Boolean(pullRequest), previous, explicitResume);
-  transition(state, issue.number, developerNeeded ? "IMPLEMENTING" : "PR_OPEN", { branch, pullRequestNumber: pullRequest?.number, headSha: freshStart ? undefined : previous?.headSha, fixCycles: cycle, startedAt: new Date().toISOString(), processStatus: "STARTING", sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}`, manualContinuationCount: manualContinuation ? (previous?.manualContinuationCount || 0) + 1 : previous?.manualContinuationCount, ...(freshStart ? { reason: undefined, validation: undefined, validationAttempts: undefined, fixCause: undefined, checkpointSha: undefined, changedFiles: undefined, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined, reviewerStartedAt: undefined, reviewerFinishedAt: undefined, reviewFindings: undefined, reviewEvidence: undefined, reviewPublicationKey: undefined, reviewUrl: undefined } : {}) });
+  transition(state, issue.number, developerNeeded ? "IMPLEMENTING" : "VERIFYING", { branch, pullRequestNumber: pullRequest?.number, headSha: freshStart ? undefined : previous?.headSha, fixCycles: cycle, startedAt: new Date().toISOString(), processStatus: "STARTING", sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}`, manualContinuationCount: manualContinuation ? (previous?.manualContinuationCount || 0) + 1 : previous?.manualContinuationCount, ...(freshStart ? { reason: undefined, validation: undefined, validationAttempts: undefined, fixCause: undefined, checkpointSha: undefined, changedFiles: undefined, localValidatedSha: undefined, publishedSha: undefined, ciPassedSha: undefined, reviewedSha: undefined, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined, reviewerStartedAt: undefined, reviewerFinishedAt: undefined, reviewFindings: undefined, reviewEvidence: undefined, reviewPublicationKey: undefined, reviewUrl: undefined } : {}) });
   await saveState(stateFile, state);
   await mark(client, issue, "agent:running");
   try {
@@ -178,8 +178,10 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       let validationEvidence: Array<{ command: string; passed: boolean; output: string }> = [];
       let checks: Awaited<ReturnType<typeof waitForRequiredChecks>>;
       let commit = { sha: "", changed: false, files: [] as string[] };
+      let localValidatedSha = "";
       if (skipLocalValidation && pullRequest && resumeChecks) {
         commit = { sha: pullRequest.headSha, changed: false, files: [] };
+        localValidatedSha = pullRequest.headSha;
         checks = resumeChecks;
         validationEvidence = previous?.validation || [];
         validationText = validationEvidence.length
@@ -228,13 +230,14 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         }
         continue;
       }
+      localValidatedSha = await gitSha(worktree.path);
       emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Publishing locally validated SHA on ${branch}` });
       try {
         // `checkpoint` may already have committed all developer changes. Push
         // the validated HEAD even when the worktree is clean; otherwise CI is
         // asked to validate a local-only SHA that GitHub cannot possibly know.
-        if (!skipLocalValidation) commit = { sha: await gitSha(worktree.path), changed: true, files: state.stories[String(issue.number)].changedFiles || [] };
-        await pushBranch(worktree.path, branch, { env: target.env });
+        commit = { sha: localValidatedSha, changed: true, files: state.stories[String(issue.number)].changedFiles || [] };
+        await publishValidatedHead(worktree.path, branch, commit.sha, { env: target.env });
       } catch (error) {
         const reason = `Publishing validated changes failed: ${error instanceof Error ? error.message : String(error)}`;
         transition(state, issue.number, "FAILED_INFRA", { processStatus: "FAILED", fixerStatus: pullRequest ? "FAILED" : undefined, reason, validationAttempts });
@@ -255,7 +258,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await saveState(stateFile, state); await mark(client, issue, "agent:blocked"); await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], reason));
         return { status: "FAILED_INFRA", state: state.stories[String(issue.number)] };
       }
-      transition(state, issue.number, "PR_OPEN", { pullRequestNumber: pullRequest.number, headSha: pullRequest.headSha, branch, fixCycles: cycle, fixCause: undefined, validation: validationEvidence, changedFiles: commit.files, pullRequestUrl: `https://github.com/${config.owner}/${config.repo}/pull/${pullRequest.number}`, processStatus: "SUCCEEDED" });
+      transition(state, issue.number, "VERIFYING", { pullRequestNumber: pullRequest.number, headSha: pullRequest.headSha, localValidatedSha, publishedSha: pullRequest.headSha, ciPassedSha: undefined, branch, fixCycles: cycle, fixCause: undefined, validation: validationEvidence, changedFiles: commit.files, pullRequestUrl: `https://github.com/${config.owner}/${config.repo}/pull/${pullRequest.number}`, processStatus: "SUCCEEDED" });
       await saveState(stateFile, state);
       emitOperationalEvent({
         source: "github",
@@ -294,7 +297,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         return { status: "VERIFYING", state: state.stories[String(issue.number)] };
       }
       }
-      transition(state, issue.number, "REVIEWING", { headSha: pullRequest.headSha });
+      transition(state, issue.number, "REVIEWING", { headSha: pullRequest.headSha, ciPassedSha: pullRequest.headSha });
       await saveState(stateFile, state);
       emitOperationalEvent({ source: "reviewer", phase: "REVIEWING", message: `Reviewer agent started for issue #${issue.number}` });
       const diff = await gitDiff(worktree.path, config.baseBranch);
@@ -324,7 +327,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
         return { status: "REVIEW_FAILED", state: state.stories[String(issue.number)] };
       }
-      transition(state, issue.number, "REVIEWING", { reviewHeadSha: pullRequest.headSha, reviewerStatus: "SUCCEEDED", reviewerFinishedAt: new Date().toISOString(), reviewFindings: review.findings, reviewEvidence: review.evidence, reviewUrl });
+      transition(state, issue.number, "REVIEWING", { reviewHeadSha: pullRequest.headSha, reviewedSha: pullRequest.headSha, reviewerStatus: "SUCCEEDED", reviewerFinishedAt: new Date().toISOString(), reviewFindings: review.findings, reviewEvidence: review.evidence, reviewUrl });
       await saveState(stateFile, state);
       if (review.decision === "NEEDS_HUMAN") {
         transition(state, issue.number, "NEEDS_HUMAN", { reason: review.findings.join("; ") || "Reviewer requested human decision" });

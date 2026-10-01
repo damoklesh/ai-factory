@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commitAndPush, commitLocal, createWorktree, gitDiff, gitSha, gitStatus, inspectChanges, pushBranch, removeWorktree, resetStoryWorkspace, squashBranch } from "../src/git.js";
+import { commitAndPush, commitLocal, createWorktree, gitDiff, gitSha, gitStatus, inspectChanges, publishValidatedHead, pushBranch, removeWorktree, resetStoryWorkspace, squashBranch } from "../src/git.js";
 import { runProcess } from "../src/processes.js";
 import { runOrchestrator } from "../src/orchestrator.js";
 
@@ -68,6 +68,20 @@ test("reuses a branch worktree left by an interrupted invocation", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("publishes a validated checkpoint even when the worktree is already clean", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-factory-publish-validated-")); const repository = join(directory, "repo"); const remote = join(directory, "remote.git");
+  try {
+    await git(directory, ["init", "--bare", remote]); await git(directory, ["init", repository]); await git(repository, ["config", "user.email", "test@example.invalid"]); await git(repository, ["config", "user.name", "AI Factory Test"]);
+    await writeFile(join(repository, "README.md"), "base\n"); await git(repository, ["add", "README.md"]); await git(repository, ["commit", "-m", "base"]); await git(repository, ["branch", "-M", "main"]); await git(repository, ["remote", "add", "origin", remote]); await git(repository, ["push", "-u", "origin", "main"]);
+    const worktree = await createWorktree(repository, "main", "agent/issue-104");
+    try {
+      await writeFile(join(worktree.path, "fix.txt"), "validated\n"); const checkpoint = await commitLocal(worktree.path, "chore(agent): checkpoint"); assert.equal(await gitStatus(worktree.path), "");
+      await publishValidatedHead(worktree.path, worktree.branch, checkpoint.sha);
+      assert.match(await git(remote, ["rev-parse", "agent/issue-104"]), new RegExp(`^${checkpoint.sha}`));
+    } finally { await removeWorktree(repository, worktree); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("resets only an explicitly restarted agent workspace to the base branch", async () => {

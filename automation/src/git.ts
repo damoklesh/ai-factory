@@ -56,6 +56,13 @@ export async function pushBranch(cwd: string, branch: string, options: GitOption
   await git(cwd, ["push", "--set-upstream", "origin", branch], 120_000, options);
 }
 
+/** Publish exactly the local SHA that passed validation, even with a clean tree. */
+export async function publishValidatedHead(cwd: string, branch: string, validatedSha: string, options: GitOptions = {}): Promise<void> {
+  const localSha = await gitSha(cwd);
+  if (localSha !== validatedSha) throw new Error(`validated SHA ${validatedSha} no longer matches local HEAD ${localSha}`);
+  await pushBranch(cwd, branch, options);
+}
+
 /** Collapse local implementation/fixing checkpoints into one pre-PR commit. */
 export async function squashBranch(cwd: string, baseRef: string, message: string, options: GitOptions & { allowedPaths?: string[] } = {}): Promise<{ sha: string; changed: boolean; files: string[] }> {
   const base = await git(cwd, ["rev-parse", baseRef], 120_000, options).catch(() => git(cwd, ["rev-parse", `origin/${baseRef}`], 120_000, options));
