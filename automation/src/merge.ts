@@ -1,7 +1,7 @@
 import type { GitHubClient } from "./github.js";
-import type { CheckRun } from "./types.js";
+import type { CheckRun, ReviewThread } from "./types.js";
 
-export interface MergeGateInput { currentSha: string; reviewedSha?: string; reviewDecision: "PASS" | "CHANGES_REQUESTED" | "NEEDS_HUMAN"; checks: CheckRun[]; requiredChecks: string[]; unresolvedBlockingComments?: number; }
+export interface MergeGateInput { currentSha: string; reviewedSha?: string; reviewDecision: "PASS" | "CHANGES_REQUESTED" | "NEEDS_HUMAN"; checks: CheckRun[]; requiredChecks: string[]; reviewThreads: { available: boolean; threads: ReviewThread[]; reason?: string }; }
 export interface MergeGateResult { ready: boolean; reason?: string; }
 
 export function evaluateMergeGate(input: MergeGateInput): MergeGateResult {
@@ -13,7 +13,9 @@ export function evaluateMergeGate(input: MergeGateInput): MergeGateResult {
   if (missing.length) return { ready: false, reason: `required checks missing for current SHA: ${missing.join(", ")}` };
   const notGreen = current.filter((check) => input.requiredChecks.includes(check.name) && (check.status !== "completed" || check.conclusion !== "success"));
   if (notGreen.length) return { ready: false, reason: `required checks are not green: ${notGreen.map((check) => check.name).join(", ")}` };
-  if ((input.unresolvedBlockingComments || 0) > 0) return { ready: false, reason: `${input.unresolvedBlockingComments} unresolved blocking review comment(s)` };
+  if (!input.reviewThreads.available) return { ready: false, reason: `review thread data unavailable${input.reviewThreads.reason ? `: ${input.reviewThreads.reason}` : ""}` };
+  const unresolved = input.reviewThreads.threads.filter((thread) => thread.headSha === input.currentSha && thread.blocking && !thread.resolved);
+  if (unresolved.length) return { ready: false, reason: `${unresolved.length} unresolved blocking review thread(s)` };
   return { ready: true };
 }
 

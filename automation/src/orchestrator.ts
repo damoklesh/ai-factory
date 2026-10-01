@@ -174,7 +174,10 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       let gate;
       try {
         const current = await client.getPullRequest(pullRequest.number);
-        gate = evaluateMergeGate({ currentSha: current.headSha, reviewedSha: commit.sha, reviewDecision: review.decision, checks: checks.checks, requiredChecks: config.requiredChecks, unresolvedBlockingComments: 0 });
+        const reviewThreads = client.getReviewThreads
+          ? await client.getReviewThreads(pullRequest.number, current.headSha)
+          : { available: false, threads: [], reason: "review thread provider unavailable" };
+        gate = evaluateMergeGate({ currentSha: current.headSha, reviewedSha: commit.sha, reviewDecision: review.decision, checks: checks.checks, requiredChecks: config.requiredChecks, reviewThreads });
       } catch (error) {
         transition(state, issue.number, "MERGE_FAILED", { reason: error instanceof Error ? error.message : String(error) });
         await saveState(stateFile, state); await mark(client, issue, "agent:blocked");

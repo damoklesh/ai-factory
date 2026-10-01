@@ -54,6 +54,8 @@ export interface CheckRun {
   headSha: string;
 }
 
+export interface ReviewThread { id: string; headSha: string; blocking: boolean; resolved: boolean; body?: string; file?: string; line?: number; }
+
 export interface ReviewResult {
   decision: "PASS" | "CHANGES_REQUESTED" | "NEEDS_HUMAN";
   findings: string[];

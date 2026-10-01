@@ -96,9 +96,12 @@ test("waits for current-SHA CI and blocks a changed PR head at merge", async () 
 
 test("merge gate requires current review, green current-SHA checks and no blockers", () => {
   const checks = [{ name: "CI", status: "completed" as const, conclusion: "success", headSha: "sha" }];
-  assert.equal(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"] }).ready, true);
-  assert.match(evaluateMergeGate({ currentSha: "new", reviewedSha: "old", reviewDecision: "PASS", checks, requiredChecks: ["CI"] }).reason || "", /stale/);
-  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [], requiredChecks: ["CI"] }).reason || "", /missing/);
-  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], unresolvedBlockingComments: 1 }).reason || "", /unresolved/);
-  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [], requiredChecks: [] }).reason || "", /no required checks configured/i);
+  const noThreads = { available: true, threads: [] };
+  assert.equal(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: noThreads }).ready, true);
+  assert.match(evaluateMergeGate({ currentSha: "new", reviewedSha: "old", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: noThreads }).reason || "", /stale/);
+  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [], requiredChecks: ["CI"], reviewThreads: noThreads }).reason || "", /missing/);
+  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: { available: true, threads: [{ id: "1", headSha: "sha", blocking: true, resolved: false }] } }).reason || "", /unresolved/);
+  assert.equal(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: { available: true, threads: [{ id: "1", headSha: "sha", blocking: true, resolved: true }, { id: "2", headSha: "sha", blocking: false, resolved: false }, { id: "3", headSha: "old", blocking: true, resolved: false }] } }).ready, true);
+  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: { available: false, threads: [], reason: "provider unavailable" } }).reason || "", /unavailable/);
+  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [], requiredChecks: [] , reviewThreads: noThreads }).reason || "", /no required checks configured/i);
 });
