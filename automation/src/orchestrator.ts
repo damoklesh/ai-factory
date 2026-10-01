@@ -1,18 +1,18 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
 import { CodexRunError, CodexRunner } from "./codex.js";
 import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubClient } from "./github.js";
 import { commitAndPush, createWorktree, gitDiff, gitRoot, removeWorktree, ensureTargetRepository, type Worktree } from "./git.js";
-import { backlogPath, syncBacklog } from "./backlog.js";
+import { backlogPath, storyIssueId, syncBacklog } from "./backlog.js";
 import { loadState, saveState, transition, canStartFix } from "./state.js";
 import { mergeReviewedPullRequest } from "./merge.js";
-import { parseStory, selectNextStory } from "./stories.js";
+import { parseStory, selectNextStory, validateDependencyGraph } from "./stories.js";
 import { runValidation, validationsPassed, waitForRequiredChecks } from "./verify.js";
 import type { Issue, OrchestrationConfig, PullRequest, StoryContract, StoryState } from "./types.js";
 
-export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; }
+export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; storyId?: string; runId?: string; storyContractPath?: string; }
 
 export function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = { configPath: process.env.AI_FACTORY_CONFIG || "config.json", dryRun: false, mock: false, syncBacklog: false };
@@ -24,9 +24,13 @@ export function parseArgs(args: string[]): CliOptions {
     else if (arg === "--config") options.configPath = args[++index] || options.configPath;
     else if (arg === "--max-stories") options.maxStories = Number(args[++index]);
     else if (arg === "--auto-merge") options.autoMerge = true;
+    else if (arg === "--story-id") options.storyId = args[++index];
+    else if (arg === "--run-id") options.runId = args[++index];
+    else if (arg === "--story-contract") options.storyContractPath = args[++index];
     else throw new Error(`unknown argument ${arg}`);
   }
   if (options.maxStories !== undefined && (!Number.isInteger(options.maxStories) || options.maxStories < 1)) throw new Error("--max-stories must be a positive integer");
+  if (options.storyId !== undefined && !/^US-\d{3,}$/i.test(options.storyId)) throw new Error("--story-id must match US-###");
   return options;
 }
 
@@ -179,7 +183,7 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
     const config = loadConfig(options.configPath);
     console.log(`Control repository: ${config.controlRepository || "current checkout"}`);
     console.log(`Target repository: ${config.targetRepository}`);
-    console.log(`Target branch: ${config.targetBranch}; max stories: ${options.maxStories ?? config.maxStories}; autoMerge: ${options.autoMerge ?? config.autoMerge}`);
+    console.log(`Target branch: ${config.targetBranch}; max stories: ${options.maxStories ?? config.maxStories}; autoMerge: ${options.autoMerge ?? config.autoMerge}; story: ${options.storyId || "auto"}; run: ${options.runId || "cli"}`);
     console.log(`Validation commands: ${config.validationCommands.length}; required checks: ${config.requiredChecks.length}`);
     if (options.syncBacklog) console.log(`Backlog sync: ${config.targetBacklogPath}`);
     return 0;
@@ -200,14 +204,29 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   const state = await loadState(stateFile);
   const issues = await client.listIssues();
   const completed = new Set(issues.filter((issue) => issue.labels.includes("agent:done")).map((issue) => issue.number));
+  const explicitContract = options.storyContractPath ? loadExplicitContract(options.storyContractPath) : undefined;
   for (let count = 0; count < effectiveConfig.maxStories; count += 1) {
-    const selection = selectNextStory(issues, completed);
+    const selection = options.storyId ? selectExplicitStory(issues, completed, options.storyId, explicitContract) : selectNextStory(issues, completed);
     if (!selection) { console.log("No eligible agent:ready story found."); break; }
     const result = await processStory(client, effectiveConfig, { ...target, controlRoot }, selection.issue, selection.contract, stateFile);
     console.log(`${result.status} #${selection.issue.number}${result.state.reason ? `: ${result.state.reason}` : ""}`);
     if (result.status === "DONE") completed.add(selection.issue.number); else break;
   }
   return 0;
+}
+
+function selectExplicitStory(issues: Issue[], completed: Set<number>, storyId: string, suppliedContract?: StoryContract): { issue: Issue; contract: StoryContract } | undefined {
+  if (!suppliedContract && validateDependencyGraph(issues).length > 0) return undefined;
+  const issue = issues.find((item) => storyIssueId(item)?.toUpperCase() === storyId.toUpperCase());
+  if (!issue || issue.state !== "open" || !issue.labels.includes("agent:ready") || completed.has(issue.number)) return undefined;
+  const contract = suppliedContract || parseStory(issue);
+  return contract.dependencies.every((dependency) => completed.has(dependency)) ? { issue, contract } : undefined;
+}
+
+function loadExplicitContract(path: string): StoryContract {
+  const value = JSON.parse(readFileSync(resolve(path), "utf8")) as Partial<StoryContract>;
+  if (typeof value.objective !== "string" || !value.objective || !Array.isArray(value.acceptanceCriteria) || value.acceptanceCriteria.some((item) => typeof item !== "string") || typeof value.scope !== "string" || !Array.isArray(value.dependencies) || value.dependencies.some((item) => !Number.isInteger(item)) || !Number.isInteger(value.priority) || Number(value.priority) < 1 || !Array.isArray(value.validation) || value.validation.some((item) => typeof item !== "string")) throw new Error("invalid explicit story contract");
+  return value as StoryContract;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) runOrchestrator().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

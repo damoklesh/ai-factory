@@ -5,7 +5,7 @@
   "description": "Local React supervision UI and Node backend for AI Factory",
   "workspaces": ["packages/contracts", "server", "ui"],
   "scripts": {
-    "build": "npm run build --workspace @ai-factory/contracts && npm run build --workspace ai-factory-server && npm run build --workspace ai-factory-ui",
+    "build": "npm run build --prefix automation && npm run build --workspace @ai-factory/contracts && npm run build --workspace ai-factory-server && npm run build --workspace ai-factory-ui",
     "test": "npm run build && node --test server/dist/tests/*.test.js ui/dist/tests/*.test.js",
     "dev": "npm run build && npm run start --workspace ai-factory-server",
     "start": "npm run build && npm run start --workspace ai-factory-server"

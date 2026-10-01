@@ -1,0 +1,60 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExecutionContext, ExecutionHandle, ExecutionOutcome, ExecutionService } from "../src/execution.js";
+import { ChildProcessExecutionService } from "../src/execution.js";
+import { AgentPersistence } from "../src/persistence.js";
+import { ProjectWorkspaceStore } from "../src/projects.js";
+import { LocalController } from "../src/controller.js";
+import { parseMarkdown } from "../src/stories.js";
+
+const execFileAsync = promisify(execFile);
+function story(id: string, priority: number, dependencies = "none", deliveryStatus = "NOT_STARTED", issue = priority): string { return `---\nstoryId: ${id}\ntitle: Story ${id}\npriority: ${priority}\ndependencies: ${dependencies}\ndeliveryStatus: ${deliveryStatus}\ngithubIssueNumber: ${issue}\nlabels: agent:ready\n---\n# ${id} — Story ${id}\n\n## User Story\nAs a user, I want ${id} so that it works.\n\n## Scope\n- In scope: ${id}\n\n## Acceptance Criteria\n- [ ] AC-1: ${id} works.\n\n## Validation\n- [ ] Run tests.\n`; }
+
+class FakeExecution implements ExecutionService {
+  contexts: ExecutionContext[] = [];
+  private resolvers: Array<(outcome: ExecutionOutcome) => void> = [];
+  constructor(private readonly failure?: Error) {}
+  async start(context: ExecutionContext): Promise<ExecutionHandle> { if (this.failure) throw this.failure; this.contexts.push(context); const completion = new Promise<ExecutionOutcome>((resolve) => this.resolvers.push(resolve)); return { pid: 4321, completion }; }
+  finish(index: number, outcome: ExecutionOutcome): void { this.resolvers[index](outcome); }
+}
+
+async function fixture(execution: ExecutionService): Promise<{ controller: LocalController; target: string }> {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-execution-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
+  await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
+  await writeFile(join(backlog, "US-001.md"), story("US-001", 1, "none", "MERGED", 1)); await writeFile(join(backlog, "US-002.md"), story("US-002", 2, "US-001", "NOT_STARTED", 2)); await writeFile(join(backlog, "US-003.md"), story("US-003", 1, "none", "NOT_STARTED", 3));
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution }); await controller.selectProject(target); return { controller, target };
+}
+
+test("selects deterministically, spawns before ACTIVE, and completes visibly", async () => {
+  const execution = new FakeExecution(); const { controller, target } = await fixture(execution); const run = await controller.start({ maxStories: 5, autoMerge: false, selectionMode: "auto" });
+  assert.equal(run.status, "ACTIVE"); assert.equal(run.storyId, "US-003"); assert.equal(run.maxStories, 1); assert.equal(run.processId, 4321); assert.equal(execution.contexts[0].project.targetPath, await realpath(target)); assert.notEqual(execution.contexts[0].controlRoot, execution.contexts[0].project.targetPath); assert.equal(execution.contexts[0].story.storyId, "US-003");
+  await assert.rejects(() => controller.start({ maxStories: 1, autoMerge: false }), /RUN_ALREADY_ACTIVE/);
+  execution.finish(0, { status: "SUCCEEDED", summary: "PR #3 open", exitCode: 0 }); await new Promise((resolve) => setImmediate(resolve));
+  const finished = (await controller.runs()).find((item) => item.runId === run.runId)!; assert.equal(finished.status, "SUCCEEDED"); assert.match(finished.resultSummary || "", /PR #3/);
+});
+
+test("honors explicit selection and dependency gates", async () => {
+  const execution = new FakeExecution(); const { controller } = await fixture(execution); await assert.rejects(() => controller.start({ maxStories: 1, autoMerge: false, selectionMode: "selected", storyId: "US-001" }), /STORY_NOT_RUNNABLE/); const run = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "selected", storyId: "US-002" }); assert.equal(run.storyId, "US-002");
+  await assert.rejects(() => controller.start({ maxStories: 1, autoMerge: true }), /AUTO_MERGE_DISABLED/);
+});
+
+test("persists a terminal failure when spawn or configuration fails", async () => {
+  const { controller } = await fixture(new FakeExecution(new Error("fake spawn failure"))); const run = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "auto" });
+  assert.equal(run.status, "FAILED"); assert.match(run.resultSummary || "", /fake spawn failure/); assert.equal((await controller.project()).activeRunId, undefined); assert.equal((await controller.runs())[0].status, "FAILED");
+});
+
+test("spawns the trusted automation entrypoint with explicit target, story, run and manual-merge config", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-child-execution-")); const control = join(root, "control"); const target = join(root, "target"); const scriptDir = join(control, "automation", "dist", "src"); const stateRoot = join(control, ".agent", "project"); await mkdir(scriptDir, { recursive: true }); await mkdir(target);
+  await writeFile(join(scriptDir, "orchestrator.js"), "console.log('fake orchestrator started'); setTimeout(() => console.log('fake orchestrator done'), 200);\n", "utf8"); await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const project = await store.select(target); const output: string[] = []; const service = new ChildProcessExecutionService((_runId, _stream, chunk) => output.push(chunk)); const parsedStory = parseMarkdown("US-007.md", story("US-007", 1, "none", "NOT_STARTED", 7));
+  const context: ExecutionContext = { runId: "run-007", story: parsedStory, project, controlRoot: await realpath(control), stateRoot, configRevision: "config-1", config: { owner: "acme", repo: "target", baseBranch: project.baseBranch || "master", validationCommands: ["npm test"], requiredChecks: [], maxStories: 1, maxFixCycles: 1, autoMerge: false, stateFile: "state.json" } };
+  const handle = await service.start(context); assert.ok(handle.pid); await assert.rejects(() => service.start({ ...context, runId: "duplicate" }), /RUN_ALREADY_ACTIVE_FOR_PROJECT/); const outcome = await handle.completion; assert.equal(outcome.status, "SUCCEEDED"); assert.match(output.join(""), /started/);
+  const runConfig = JSON.parse(await import("node:fs/promises").then(({ readFile }) => readFile(join(stateRoot, "run-run-007.config.json"), "utf8"))) as { targetWorkspace: string; autoMerge: boolean; selectedStoryId: string; runId: string };
+  assert.equal(runConfig.targetWorkspace, project.targetPath); assert.equal(runConfig.autoMerge, false); assert.equal(runConfig.selectedStoryId, "US-007"); assert.equal(runConfig.runId, "run-007");
+  const storyContract = JSON.parse(await import("node:fs/promises").then(({ readFile }) => readFile(join(stateRoot, "run-run-007.story.json"), "utf8"))) as { objective: string; dependencies: number[] }; assert.match(storyContract.objective, /US-007/); assert.deepEqual(storyContract.dependencies, []);
+});

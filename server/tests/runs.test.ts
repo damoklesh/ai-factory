@@ -30,6 +30,6 @@ test("event replay returns persisted events after the requested cursor", async (
   const run = await controller.start({ maxStories: 1, autoMerge: false });
   await controller.control(run.runId, "pause");
   const replay = await controller.eventsSince(1);
-  assert.equal(replay.length, 1);
-  assert.match(replay[0].message, /pause/);
+  assert.equal(replay.length, 2);
+  assert.match(replay[1].message, /pause/);
 });

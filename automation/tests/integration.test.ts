@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commitAndPush, createWorktree, gitDiff, gitSha, gitStatus, removeWorktree } from "../src/git.js";
+import { commitAndPush, createWorktree, gitDiff, gitSha, gitStatus, inspectChanges, removeWorktree } from "../src/git.js";
 import { runProcess } from "../src/processes.js";
 import { runOrchestrator } from "../src/orchestrator.js";
 
@@ -64,4 +64,13 @@ test("runs the mock sprint and configured dry-run through the CLI entrypoint", a
     console.log = originalLog;
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("inspects the diff and refuses protected or secret-like files before staging", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-factory-diff-policy-"));
+  try {
+    await git(directory, ["init"]); await git(directory, ["config", "user.email", "test@example.invalid"]); await git(directory, ["config", "user.name", "AI Factory Test"]); await writeFile(join(directory, "README.md"), "base\n"); await git(directory, ["add", "README.md"]); await git(directory, ["commit", "-m", "base"]);
+    await writeFile(join(directory, "feature.txt"), "allowed\n"); assert.deepEqual(await inspectChanges(directory), ["feature.txt"]);
+    await writeFile(join(directory, "TOKENS.txt"), "fixture-only\n"); await assert.rejects(() => inspectChanges(directory), /refusing to stage.*TOKENS\.txt/i);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

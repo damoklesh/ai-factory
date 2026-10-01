@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.js";
 import { ensureTargetRepository } from "../src/git.js";
+import { parseArgs } from "../src/orchestrator.js";
 
 test("normalizes target repository configuration and keeps legacy owner/repo support", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ai-factory-config-"));
@@ -36,4 +37,11 @@ test("rejects a target workspace inside the control repository", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("parses explicit story and run identity without enabling auto-merge", () => {
+  const options = parseArgs(["--config", "run.json", "--max-stories", "1", "--story-id", "US-007", "--story-contract", "story.json", "--run-id", "run-123"]);
+  assert.equal(options.storyId, "US-007"); assert.equal(options.runId, "run-123"); assert.equal(options.autoMerge, undefined);
+  assert.equal(options.storyContractPath, "story.json");
+  assert.throws(() => parseArgs(["--story-id", "bad"]), /US-###/);
 });

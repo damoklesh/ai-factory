@@ -13,6 +13,10 @@ It listens on `http://127.0.0.1:3333` by default. `npm run start` uses the same 
 
 The UI packages are `ui/` (React), `server/` (Node HTTP API and local controller), and `packages/contracts/` (shared TypeScript contracts). Markdown stories are read from `backlog/` under the selected target Git root. A non-Git directory is initialized only after the exact canonical path is typed as confirmation. Operational state and recent-project metadata are written per target under AI Factory's ignored `.agent/projects/<projectId>/`; nothing operational is written into the target checkout.
 
+From **Executions**, choose one valid story or deterministic **next eligible** selection. The local API writes a run-specific, secret-free config and story contract, then spawns the trusted `automation/dist/src/orchestrator.js` from this base checkout. Codex itself runs only in the isolated target story worktree. A run is marked `ACTIVE` only after spawn succeeds, is limited to one story, and always has `autoMerge: false`; spawn/config failures remain visible as durable failed runs. Before commit/push, the automation package inspects the changed paths and refuses controller policy, CI workflow, operational-state, and secret-like files rather than using `git add -A`.
+
+V1 deliberately serializes execution in one local controller, even across different targets; a second start is rejected until the active run reaches a terminal state. The execution service also keeps a per-project guard as defense in depth. Cross-process atomic locking is added by the hardening story before multiple controller instances are supported.
+
 Useful commands:
 
 ```bash

@@ -6,6 +6,7 @@ import { GitHubSyncAdapter } from "./github.js";
 import { LocalController } from "./controller.js";
 import { AgentPersistence } from "./persistence.js";
 import { ProjectWorkspaceStore } from "./projects.js";
+import { ChildProcessExecutionService } from "./execution.js";
 
 const port = Number(process.env.AI_FACTORY_UI_PORT || 3333);
 const repositoryRoot = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
@@ -15,7 +16,7 @@ const token = githubToken();
 const orchestratorStatePath = resolve(repositoryRoot, "automation", config.stateFile || ".cache/state.json");
 const projectStore = new ProjectWorkspaceStore(repositoryRoot, join(repositoryRoot, ".agent", "projects"), config.targetBacklogPath || "backlog");
 const githubAdapterFactory = token ? (project: import("@ai-factory/contracts").TargetProject) => project.github ? new GitHubSyncAdapter(project.github.owner, project.github.repo, token) : undefined : undefined;
-const controller = new LocalController(new AgentPersistence(join(repositoryRoot, ".agent", "projects", "unselected")), { githubAdapterFactory, projectStore, orchestratorStatePath });
+const controller = new LocalController(new AgentPersistence(join(repositoryRoot, ".agent", "projects", "unselected")), { executionService: new ChildProcessExecutionService(), githubAdapterFactory, projectStore, orchestratorStatePath });
 const app = createAppServer({ port, uiDirectory, controller });
 app.server.listen(port, "127.0.0.1", () => {
   console.log(`AI Factory UI listening at http://127.0.0.1:${port}`);

@@ -1,7 +1,7 @@
 export const SCHEMA_VERSION = 1;
 
 export type DeliveryStatus = "NOT_STARTED" | "IMPLEMENTING" | "PR_OPEN" | "MERGED";
-export type ExecutionStatus = "IDLE" | "ACTIVE" | "PAUSE_REQUESTED" | "PAUSED" | "STOP_REQUESTED" | "STOPPED" | "FINISHED" | "INTERRUPTED" | "BLOCKED";
+export type ExecutionStatus = "IDLE" | "ACTIVE" | "PAUSE_REQUESTED" | "PAUSED" | "STOP_REQUESTED" | "STOPPED" | "FINISHED" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED" | "BLOCKED";
 export type ValidationStatus = "PENDING" | "PASS" | "FAIL" | "UNKNOWN" | "STALE";
 export type RunPhase = "SELECTING" | "IMPLEMENTING" | "TESTING" | "CI" | "REVIEWING" | "FIXING" | "MERGING" | "PAUSED" | "STOPPED" | "FINISHED";
 
@@ -146,6 +146,10 @@ export interface RunSnapshot {
   interruptionReason?: string;
   effectiveConfigRevision: string;
   effectiveSpecRevision?: string;
+  selectionMode?: "selected" | "auto";
+  targetProjectId?: string;
+  processId?: number;
+  resultSummary?: string;
 }
 
 export interface ApprovalRequest {
@@ -186,7 +190,7 @@ export interface AppConfigView {
   configRevision?: string;
 }
 
-export interface StartRunRequest { maxStories: number; autoMerge: boolean; expectedConfigRevision?: string; }
+export interface StartRunRequest { maxStories: number; autoMerge: boolean; expectedConfigRevision?: string; selectionMode?: "selected" | "auto"; storyId?: string; }
 export interface DecisionRequest { decision: "APPROVE" | "REJECT" | "DEFER"; reason?: string; expectedHeadSha?: string; expectedSpecRevision?: string; idempotencyKey: string; }
 export interface DecisionResult { accepted: boolean; decisionId?: string; requestId: string; status: ApprovalRequest["status"]; message: string; executionStatus: "PENDING" | "APPLIED" | "FAILED"; }
 export interface InstructionRequest { content: string; expectedRunStatus: ExecutionStatus; idempotencyKey: string; }
@@ -201,7 +205,10 @@ export class ContractValidationError extends Error {
 export function parseStartRunRequest(value: unknown): StartRunRequest {
   if (!isRecord(value) || !positiveInteger(value.maxStories) || typeof value.autoMerge !== "boolean") throw new ContractValidationError("run", "maxStories must be a positive integer and autoMerge must be boolean");
   const expectedConfigRevision = optionalString(value.expectedConfigRevision);
-  return expectedConfigRevision ? { maxStories: value.maxStories, autoMerge: value.autoMerge, expectedConfigRevision } : { maxStories: value.maxStories, autoMerge: value.autoMerge };
+  const selectionMode = value.selectionMode === undefined ? "auto" : value.selectionMode;
+  const storyId = optionalString(value.storyId);
+  if (!["selected", "auto"].includes(String(selectionMode)) || (selectionMode === "selected" && !storyId)) throw new ContractValidationError("run.selection", "selected mode requires storyId; otherwise use auto");
+  return { maxStories: value.maxStories, autoMerge: value.autoMerge, selectionMode: selectionMode as "selected" | "auto", storyId, ...(expectedConfigRevision ? { expectedConfigRevision } : {}) };
 }
 
 export function parseSelectProjectRequest(value: unknown): SelectProjectRequest {
