@@ -433,7 +433,7 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   const explicitContract = options.storyContractPath ? loadExplicitContract(options.storyContractPath) : undefined;
   const instructions = options.instructionPath ? loadInstructions(options.instructionPath) : [];
   for (let count = 0; count < effectiveConfig.maxStories; count += 1) {
-    const selection = options.storyId ? selectExplicitStory(issues, completed, options.storyId, explicitContract, options.resume) : selectNextStory(issues, completed);
+    const selection = options.storyId ? selectExplicitStory(issues, completed, options.storyId, explicitContract, options.resume || options.freshStart) : selectNextStory(issues, completed);
     if (!selection) { console.log("No eligible agent:ready story found."); break; }
     const result = await processStory(client, effectiveConfig, { ...target, controlRoot }, selection.issue, selection.contract, stateFile, instructions, options.resume, options.freshStart);
     emitOperationalEvent({ source: "orchestrator", phase: result.status === "PR_OPEN" || result.status === "DONE" ? "FINISHED" : "WAITING", message: `${result.status} #${selection.issue.number}${result.state.reason ? `: ${result.state.reason}` : ""}`, level: result.status === "FAILED_INFRA" ? "ERROR" : result.status === "PR_OPEN" || result.status === "DONE" ? "INFO" : "WARN", activity: result.status === "PR_OPEN" || result.status === "DONE" ? "RUNNING" : "WAITING_FOR_INPUT", outcome: result.status });
