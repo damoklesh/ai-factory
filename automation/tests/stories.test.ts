@@ -5,7 +5,7 @@ import { emptyState, canStartFix, nextFixCycle, reconcilePullRequest, shouldRunD
 import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { evaluateRequiredChecks } from "../src/checks.js";
 import { buildPullRequestBody, replaceAgentLabel } from "../src/github.js";
-import { parseArgs, selectExplicitStory } from "../src/orchestrator.js";
+import { feedbackForResume, parseArgs, selectExplicitStory } from "../src/orchestrator.js";
 import { evaluateMergeGate, mergeReviewedPullRequest } from "../src/merge.js";
 import { waitForRequiredChecks } from "../src/verify.js";
 import type { GitHubClient } from "../src/github.js";
@@ -83,6 +83,8 @@ test("resumes an existing PR at review without another developer cycle", () => {
   assert.equal(shouldRunDeveloper(true, { ...stateStory("FIXING"), fixCause: "REVIEW_CHANGES_REQUESTED" }), true);
   assert.equal(shouldRunDeveloper(true, { ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix this"] }, false), false);
   assert.equal(shouldRunDeveloper(true, { ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix this"] }, true), true);
+  assert.match(feedbackForResume({ ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix README", "fix E2E port"] }, true), /fix README/);
+  assert.equal(feedbackForResume({ ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix this"] }, false), "");
 });
 
 test("allows only an explicit resume to reopen a blocked story", () => {

@@ -49,6 +49,14 @@ function reviewPrompt(issue: Issue, contract: StoryContract, diff: string, valid
   return [`Review Issue #${issue.number}: ${issue.title}`, `Review snapshot: storyId=${snapshot.storyId}; runId=${snapshot.runId}; pullRequest=${snapshot.pullRequest}; sha=${snapshot.sha}`, `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Diff:\n${diff}`, `Validation evidence:\n${validationOutput}`, configuredGuidance ? `Reviewer guidance from configuration:\n${configuredGuidance}` : "", "Return only the review JSON. Do not modify files, push, merge, alter policy, or handle secrets.", "Every actionable finding should include file:line when available in its text."].filter(Boolean).join("\n");
 }
 
+/** Build the exact persisted feedback that a resumed developer must address. */
+export function feedbackForResume(previous: StoryState | undefined, manualContinuation: boolean): string {
+  if (!previous) return "";
+  if (previous.status === "FIXING" || previous.status === "REVIEW_CHANGES_REQUESTED") return previous.reason || "";
+  if (manualContinuation && previous.reviewFindings?.length) return `Reviewer findings requiring correction:\n${previous.reviewFindings.map((finding) => `- ${finding}`).join("\n")}`;
+  return "";
+}
+
 function reviewPublicationBody(result: { findings: string[]; evidence: string[]; decision: string }, snapshot: { storyId: string; runId: string; sha: string }): string {
   return [`AI Factory review`, `Story: ${snapshot.storyId}`, `Run: ${snapshot.runId}`, `Reviewed SHA: ${snapshot.sha}`, `Decision: ${result.decision}`, "", "Findings:", ...(result.findings.length ? result.findings.map((item) => `- ${item}`) : ["- No actionable findings."]), "", "Evidence:", ...(result.evidence.length ? result.evidence.map((item) => `- ${item}`) : ["- Reviewer completed without additional evidence."])].join("\n");
 }
@@ -69,11 +77,11 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   let worktree: Worktree | undefined;
   let pullRequest: PullRequest | undefined = (await client.listPullRequests(branch))[0];
   const previous = state.stories[String(issue.number)];
-  let feedback = previous && (previous.status === "FIXING" || previous.status === "REVIEW_CHANGES_REQUESTED") ? previous.reason || "" : "";
   // Fix cycles measure developer/reviewer iterations after a PR exists. A stale
   // local-only state must never consume that budget or make the first PR start
   // at an exhausted cycle.
   const manualContinuation = Boolean(explicitResume && pullRequest && previous?.status === "NEEDS_HUMAN" && previous.reviewFindings?.length);
+  let feedback = feedbackForResume(previous, manualContinuation);
   let cycle = pullRequest ? (manualContinuation ? 0 : previous?.fixCycles || 0) : 0;
   let implementationAttempt = 0;
   let validationAttempts = previous?.validationAttempts || 0;
