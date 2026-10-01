@@ -34,6 +34,7 @@ test("covers all required check outcomes", () => {
   assert.equal(evaluateRequiredChecks([{ name: "CI", status: "queued", conclusion: null, headSha: "sha" }], ["CI"], "sha").decision, "WAIT");
   assert.equal(evaluateRequiredChecks([{ name: "CI", status: "completed", conclusion: "cancelled", headSha: "sha" }], ["CI"], "sha").decision, "FAIL");
   assert.equal(evaluateRequiredChecks([{ name: "CI", status: "completed", conclusion: "success", headSha: "sha" }], ["CI"], "sha").decision, "PASS");
+  assert.equal(evaluateRequiredChecks([{ name: "CI / CI Gate (pull_request)", status: "completed", conclusion: "success", headSha: "sha" }], ["CI Gate"], "sha").decision, "PASS");
 });
 
 test("persists state for restart and retains story metadata", async () => {

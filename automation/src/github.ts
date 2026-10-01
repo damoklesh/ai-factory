@@ -1,4 +1,5 @@
 import type { CheckRun, Issue, PullRequest, ReviewThread } from "./types.js";
+import { normalizeCheckName } from "./checks.js";
 
 export interface GitHubClient {
   listIssues(): Promise<Issue[]>;
@@ -87,14 +88,21 @@ export class RestGitHubClient implements GitHubClient {
   }
 
   async getChecks(headSha: string): Promise<CheckRun[]> {
-    const runs = await this.request<{ workflow_runs: Array<{ id: number; name: string; status: string; conclusion: string | null; head_sha: string }> }>(this.path(`/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100`));
-    const checks: CheckRun[] = [];
+    const runs = await this.request<{ workflow_runs: Array<{ id: number; name: string; status: string; conclusion: string | null; head_sha: string; updated_at?: string }> }>(this.path(`/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100`));
+    const latest = new Map<string, { check: CheckRun; sortKey: number }>();
     for (const run of runs.workflow_runs.filter((item) => item.head_sha === headSha)) {
+      const runSortKey = Date.parse(run.updated_at || "") || run.id;
       const jobs = await this.request<{ jobs: Array<{ name: string; status: string; conclusion: string | null; head_sha?: string }> }>(this.path(`/actions/runs/${run.id}/jobs?per_page=100`));
-      if (jobs.jobs.length) checks.push(...jobs.jobs.map((job) => ({ name: job.name, status: actionStatus(job.status), conclusion: job.conclusion, headSha: job.head_sha || run.head_sha || headSha })));
-      else checks.push({ name: run.name, status: actionStatus(run.status), conclusion: run.conclusion, headSha: run.head_sha || headSha });
+      const checks = jobs.jobs.length
+        ? jobs.jobs.map((job) => ({ name: job.name, status: actionStatus(job.status), conclusion: job.conclusion, headSha: job.head_sha || run.head_sha || headSha }))
+        : [{ name: run.name, status: actionStatus(run.status), conclusion: run.conclusion, headSha: run.head_sha || headSha }];
+      for (const check of checks) {
+        const key = normalizeCheckName(check.name);
+        const previous = latest.get(key);
+        if (!previous || runSortKey >= previous.sortKey) latest.set(key, { check, sortKey: runSortKey });
+      }
     }
-    return checks;
+    return [...latest.values()].map((entry) => entry.check);
   }
 
   async createPullRequest(input: { title: string; body: string; headBranch: string; baseBranch: string }): Promise<PullRequest> {

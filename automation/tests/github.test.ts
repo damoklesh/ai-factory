@@ -56,3 +56,24 @@ test("surfaces GitHub API errors without exposing the token", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("uses the latest Actions attempt and accepts GitHub display names", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/actions/runs?head_sha=sha-2&per_page=100")) return Response.json({ workflow_runs: [
+      { id: 10, name: "CI", status: "in_progress", conclusion: null, head_sha: "sha-2", updated_at: "2026-01-01T00:00:00Z" },
+      { id: 11, name: "CI", status: "completed", conclusion: "success", head_sha: "sha-2", updated_at: "2026-01-01T00:01:00Z" },
+    ] });
+    if (url.endsWith("/actions/runs/10/jobs?per_page=100")) return Response.json({ jobs: [{ name: "CI Gate", status: "in_progress", conclusion: null, head_sha: "sha-2" }] });
+    if (url.endsWith("/actions/runs/11/jobs?per_page=100")) return Response.json({ jobs: [{ name: "CI / CI Gate (pull_request)", status: "completed", conclusion: "success", head_sha: "sha-2" }] });
+    return new Response(null, { status: 204 });
+  };
+  try {
+    const client = new RestGitHubClient("owner", "repo", "secret");
+    const checks = await client.getChecks("sha-2");
+    assert.deepEqual(checks, [{ name: "CI / CI Gate (pull_request)", status: "completed", conclusion: "success", headSha: "sha-2" }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
