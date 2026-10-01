@@ -12,14 +12,14 @@ import { parseStory, selectNextStory, storyEligibility, validateDependencyGraph 
 import { runValidationPlan, validationsPassed, waitForRequiredChecks } from "./verify.js";
 import type { Issue, OrchestrationConfig, PullRequest, StoryContract, StoryState } from "./types.js";
 
-export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; storyId?: string; runId?: string; storyContractPath?: string; instructionPath?: string; }
+export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; storyId?: string; runId?: string; resume: boolean; storyContractPath?: string; instructionPath?: string; }
 
 function emitOperationalEvent(input: { source: "orchestrator" | "developer" | "reviewer" | "git" | "github" | "validation"; phase: string; message: string; level?: "INFO" | "WARN" | "ERROR"; command?: string; activity?: "RUNNING" | "WAITING_FOR_INPUT" | "WAITING_FOR_CHECKS"; outcome?: string }): void {
   console.log(JSON.stringify({ aiFactoryEvent: true, level: "INFO", activity: "RUNNING", ...input }));
 }
 
 export function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = { configPath: process.env.AI_FACTORY_CONFIG || "config.json", dryRun: false, mock: false, syncBacklog: false };
+  const options: CliOptions = { configPath: process.env.AI_FACTORY_CONFIG || "config.json", dryRun: false, mock: false, syncBacklog: false, resume: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--dry-run") options.dryRun = true;
@@ -30,12 +30,14 @@ export function parseArgs(args: string[]): CliOptions {
     else if (arg === "--auto-merge") options.autoMerge = true;
     else if (arg === "--story-id") options.storyId = args[++index];
     else if (arg === "--run-id") options.runId = args[++index];
+    else if (arg === "--resume") options.resume = true;
     else if (arg === "--story-contract") options.storyContractPath = args[++index];
     else if (arg === "--instruction-file") options.instructionPath = args[++index];
     else throw new Error(`unknown argument ${arg}`);
   }
   if (options.maxStories !== undefined && (!Number.isInteger(options.maxStories) || options.maxStories < 1)) throw new Error("--max-stories must be a positive integer");
   if (options.storyId !== undefined && !/^US-\d{3,}$/i.test(options.storyId)) throw new Error("--story-id must match US-###");
+  if (options.resume && !options.storyId) throw new Error("--resume requires --story-id");
   return options;
 }
 
@@ -363,7 +365,7 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   const explicitContract = options.storyContractPath ? loadExplicitContract(options.storyContractPath) : undefined;
   const instructions = options.instructionPath ? loadInstructions(options.instructionPath) : [];
   for (let count = 0; count < effectiveConfig.maxStories; count += 1) {
-    const selection = options.storyId ? selectExplicitStory(issues, completed, options.storyId, explicitContract) : selectNextStory(issues, completed);
+    const selection = options.storyId ? selectExplicitStory(issues, completed, options.storyId, explicitContract, options.resume) : selectNextStory(issues, completed);
     if (!selection) { console.log("No eligible agent:ready story found."); break; }
     const result = await processStory(client, effectiveConfig, { ...target, controlRoot }, selection.issue, selection.contract, stateFile, instructions);
     emitOperationalEvent({ source: "orchestrator", phase: result.status === "PR_OPEN" || result.status === "DONE" ? "FINISHED" : "WAITING", message: `${result.status} #${selection.issue.number}${result.state.reason ? `: ${result.state.reason}` : ""}`, level: result.status === "FAILED_INFRA" ? "ERROR" : result.status === "PR_OPEN" || result.status === "DONE" ? "INFO" : "WARN", activity: result.status === "PR_OPEN" || result.status === "DONE" ? "RUNNING" : "WAITING_FOR_INPUT", outcome: result.status });
@@ -373,10 +375,10 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   return 0;
 }
 
-export function selectExplicitStory(issues: Issue[], completed: Set<number>, storyId: string, suppliedContract?: StoryContract): { issue: Issue; contract: StoryContract } {
+export function selectExplicitStory(issues: Issue[], completed: Set<number>, storyId: string, suppliedContract?: StoryContract, allowBlocked = false): { issue: Issue; contract: StoryContract } {
   const issue = issues.find((item) => storyIssueId(item)?.toUpperCase() === storyId.toUpperCase());
   if (!suppliedContract && validateDependencyGraph(issues).length > 0) throw new Error(`story selection refused: ${validateDependencyGraph(issues).join("; ")}`);
-  const reason = storyEligibility(issue, issues, completed);
+  const reason = storyEligibility(issue, issues, completed, allowBlocked);
   if (reason) throw new Error(`story selection refused: ${reason}`);
   const contract = suppliedContract || parseStory(issue!);
   const unmet = contract.dependencies.find((dependency) => !completed.has(dependency));

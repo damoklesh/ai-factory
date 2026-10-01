@@ -5,7 +5,7 @@ import { emptyState, canStartFix, nextFixCycle, reconcilePullRequest, shouldRunD
 import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { evaluateRequiredChecks } from "../src/checks.js";
 import { buildPullRequestBody, replaceAgentLabel } from "../src/github.js";
-import { parseArgs } from "../src/orchestrator.js";
+import { parseArgs, selectExplicitStory } from "../src/orchestrator.js";
 import { evaluateMergeGate, mergeReviewedPullRequest } from "../src/merge.js";
 import { waitForRequiredChecks } from "../src/verify.js";
 import type { GitHubClient } from "../src/github.js";
@@ -79,6 +79,13 @@ test("resumes an existing PR at review without another developer cycle", () => {
   assert.equal(shouldRunDeveloper(true, "FAILED_INFRA"), false);
   assert.equal(shouldRunDeveloper(true, "REVIEW_CHANGES_REQUESTED"), true);
   assert.equal(shouldRunDeveloper(true, "FIXING"), true);
+});
+
+test("allows only an explicit resume to reopen a blocked story", () => {
+  const blocked = { ...issue(18, 1), title: "[US-001] Create the project scaffold", labels: ["agent:blocked"] };
+  assert.throws(() => selectExplicitStory([blocked], new Set(), "US-001"), /blocked/);
+  assert.equal(selectExplicitStory([blocked], new Set(), "US-001", undefined, true).issue.number, 18);
+  assert.equal(parseArgs(["--story-id", "US-001", "--resume"]).resume, true);
 });
 
 test("rejects malformed agent results", () => {

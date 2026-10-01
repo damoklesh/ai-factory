@@ -213,7 +213,7 @@ export class LocalController {
         if (this.options.executionService) story = await this.ensureGithubIssueLink(story);
         const pending = (await this.persistence.readInstructions<{ instructionId: string; content?: string; status: string }>(runId)).filter((item) => item.status === "PENDING_NEXT_INVOCATION" && item.content);
         this.activeRun = { ...this.activeRun, status: "IDLE", phase: "SELECTING", activity: "IDLE", pauseRequested: false, stopRequested: false, updatedAt: new Date().toISOString() }; await this.persist("resume accepted; starting next invocation");
-        const lock = new ProjectRunLock(this.options.projectStore!.projectDataRoot(this.activeProject!.projectId)); await lock.acquire(runId); this.runLocks.set(runId, lock); const resumed = await this.spawnExecution(story, pending.map((item) => item.content!));
+        const lock = new ProjectRunLock(this.options.projectStore!.projectDataRoot(this.activeProject!.projectId)); await lock.acquire(runId); this.runLocks.set(runId, lock); const resumed = await this.spawnExecution(story, pending.map((item) => item.content!), true);
         for (const item of pending) await this.persistence.appendInstruction(runId, { schemaVersion: 1, instructionId: item.instructionId, status: "APPLIED", appliedAt: new Date().toISOString(), invocation: resumed.attempts });
         if (pending.length) await this.persist(`${pending.length} queued instruction(s) applied to invocation ${resumed.attempts}`);
         return resumed;
@@ -231,9 +231,9 @@ export class LocalController {
     await this.enqueueEvent(snapshot.runId, snapshot, { source: "controller", phase: snapshot.phase, level: "INFO", message });
   }
 
-  private async spawnExecution(story: StoryDetail, instructions: string[] = []): Promise<RunSnapshot> {
+  private async spawnExecution(story: StoryDetail, instructions: string[] = [], resume = false): Promise<RunSnapshot> {
     const project = this.activeProject!; const stateRoot = this.options.projectStore!.projectDataRoot(project.projectId); const runId = this.activeRun!.runId;
-    const handle = await this.options.executionService!.start({ runId, story, project, controlRoot: this.options.projectStore!.controlRoot, stateRoot, configRevision: this.configRevision, config: { ...this.config }, instructions, onEvent: (event) => { void this.recordProcessEvent(runId, event); } });
+    const handle = await this.options.executionService!.start({ runId, story, project, controlRoot: this.options.projectStore!.controlRoot, stateRoot, configRevision: this.configRevision, config: { ...this.config }, instructions, resume, onEvent: (event) => { void this.recordProcessEvent(runId, event); } });
     this.executionHandles.set(runId, handle); this.activeRun = { ...this.activeRun!, status: "ACTIVE", phase: "IMPLEMENTING", activity: "RUNNING", processId: handle.pid, attempts: this.activeRun!.attempts + 1, updatedAt: new Date().toISOString() }; this.markStoryActive(story, this.activeRun.updatedAt); await this.persist("orchestrator process spawned"); void handle.completion.then((outcome) => this.completeExecution(runId, outcome)); return this.activeRun;
   }
 
