@@ -4,6 +4,8 @@ export type DeliveryStatus = "NOT_STARTED" | "IMPLEMENTING" | "PR_OPEN" | "MERGE
 export type ExecutionStatus = "IDLE" | "ACTIVE" | "PAUSE_REQUESTED" | "PAUSED" | "STOP_REQUESTED" | "STOPPED" | "FINISHED" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED" | "BLOCKED";
 export type ValidationStatus = "PENDING" | "PASS" | "FAIL" | "UNKNOWN" | "STALE";
 export type RunPhase = "SELECTING" | "IMPLEMENTING" | "TESTING" | "CI" | "REVIEWING" | "FIXING" | "MERGING" | "WAITING" | "PAUSED" | "STOPPED" | "FINISHED";
+export type WorkflowStage = "IMPLEMENTING" | "PR_OPEN" | "REVIEWING" | "REVIEW_CHANGES_REQUESTED" | "FIXING_REVIEW" | "REVALIDATING" | "WAITING_FOR_CI" | "READY_FOR_MERGE" | "MERGE_PENDING_APPROVAL" | "MERGED" | "NEEDS_HUMAN" | "FAILED" | "CANCELLED" | "INTERRUPTED";
+export type AgentProcessStatus = "STARTING" | "RUNNING" | "WAITING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "LOST" | "UNKNOWN";
 
 export interface StoryDiagnostic {
   severity: "ERROR" | "WARNING";
@@ -41,6 +43,11 @@ export interface StorySummary {
   valid?: boolean;
   diagnostics?: StoryDiagnostic[];
   labels?: string[];
+  workflowStage?: WorkflowStage;
+  stageStartedAt?: string;
+  stageUpdatedAt?: string;
+  nextAction?: string;
+  agentProcess?: { role: "IMPLEMENTER" | "REVIEWER" | "FIXER"; status: AgentProcessStatus; pid?: number; startedAt?: string; lastEventAt?: string; exitCode?: number | null };
 }
 
 export interface StoryDetail extends StorySummary {
