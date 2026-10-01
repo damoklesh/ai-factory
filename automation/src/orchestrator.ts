@@ -43,8 +43,12 @@ function storyPrompt(issue: Issue, contract: StoryContract, feedback = "", instr
   return [`Implement GitHub Issue #${issue.number}: ${issue.title}`, `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Scope: ${contract.scope}`, `Validation: ${contract.validation.join("; ") || "use configured validation commands"}`, feedback ? `Feedback from the previous gate:\n${feedback}` : "", instructions.length ? `Additional human instructions for this invocation:\n${instructions.map((item) => `- ${item}`).join("\n")}` : "", "Work only in the current worktree. Do not change controller policy, CI protections, or credentials. End with the required JSON result."].filter(Boolean).join("\n");
 }
 
-function reviewPrompt(issue: Issue, contract: StoryContract, diff: string, validationOutput: string): string {
-  return [`Review Issue #${issue.number}: ${issue.title}`, `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Diff:\n${diff}`, `Validation evidence:\n${validationOutput}`, "Return only the review JSON. Do not modify files."].join("\n");
+function reviewPrompt(issue: Issue, contract: StoryContract, diff: string, validationOutput: string, snapshot: { storyId: string; runId: string; pullRequest: number; sha: string }): string {
+  return [`Review Issue #${issue.number}: ${issue.title}`, `Review snapshot: storyId=${snapshot.storyId}; runId=${snapshot.runId}; pullRequest=${snapshot.pullRequest}; sha=${snapshot.sha}`, `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Diff:\n${diff}`, `Validation evidence:\n${validationOutput}`, "Return only the review JSON. Do not modify files, push, merge, alter policy, or handle secrets.", "Every actionable finding should include file:line when available in its text."].join("\n");
+}
+
+function reviewPublicationBody(result: { findings: string[]; evidence: string[]; decision: string }, snapshot: { storyId: string; runId: string; sha: string }): string {
+  return [`AI Factory review`, `Story: ${snapshot.storyId}`, `Run: ${snapshot.runId}`, `Reviewed SHA: ${snapshot.sha}`, `Decision: ${result.decision}`, "", "Findings:", ...(result.findings.length ? result.findings.map((item) => `- ${item}`) : ["- No actionable findings."]), "", "Evidence:", ...(result.evidence.length ? result.evidence.map((item) => `- ${item}`) : ["- Reviewer completed without additional evidence."])].join("\n");
 }
 
 function formatFailure(state: StoryState, reason: string): string {
@@ -121,16 +125,34 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       await saveState(stateFile, state);
       emitOperationalEvent({ source: "reviewer", phase: "REVIEWING", message: `Reviewer agent started for issue #${issue.number}` });
       const diff = await gitDiff(worktree.path, config.baseBranch);
+      const runId = config.runId || "cli";
+      const snapshot = { storyId: `US-${String(issue.number).padStart(3, "0")}`, runId, pullRequest: pullRequest.number, sha: commit.sha };
+      const publicationKey = `${runId}:${issue.number}:${cycle}:${commit.sha}`;
+      transition(state, issue.number, "REVIEWING", { reviewerStatus: "RUNNING", reviewerStartedAt: new Date().toISOString(), reviewSha: commit.sha, reviewPublicationKey: publicationKey });
+      await saveState(stateFile, state);
       let review;
       try {
-        review = await codex.reviewer(reviewPrompt(issue, contract, diff, validationText), worktree.path, config.timeouts.codexMinutes * 60_000);
+        review = await codex.reviewer(reviewPrompt(issue, contract, diff, validationText, snapshot), worktree.path, config.timeouts.codexMinutes * 60_000);
       } catch (error) {
-        transition(state, issue.number, "NEEDS_HUMAN", { reason: error instanceof Error ? error.message : String(error) });
+        transition(state, issue.number, "REVIEW_FAILED", { reviewerStatus: "FAILED", reviewerFinishedAt: new Date().toISOString(), reason: error instanceof Error ? error.message : String(error) });
         await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], state.stories[String(issue.number)].reason || "Reviewer failed"));
-        return { status: "NEEDS_HUMAN", state: state.stories[String(issue.number)] };
+        return { status: "REVIEW_FAILED", state: state.stories[String(issue.number)] };
       }
-      transition(state, issue.number, "REVIEWING", { reviewHeadSha: commit.sha });
+      const publication = reviewPublicationBody(review, snapshot);
+      let reviewUrl = state.stories[String(issue.number)].reviewUrl;
+      try {
+        if (state.stories[String(issue.number)].reviewPublicationKey !== publicationKey || !reviewUrl) {
+          const published = await client.publishPullRequestReview?.(pullRequest.number, { body: publication, changesRequested: review.decision === "CHANGES_REQUESTED", idempotencyKey: publicationKey });
+          reviewUrl = published?.url || `${config.owner}/${config.repo}/pull/${pullRequest.number}#ai-factory-review-${publicationKey}`;
+        }
+      } catch (error) {
+        transition(state, issue.number, "REVIEW_FAILED", { reviewerStatus: "FAILED", reviewerFinishedAt: new Date().toISOString(), reason: error instanceof Error ? error.message : String(error) });
+        await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
+        return { status: "REVIEW_FAILED", state: state.stories[String(issue.number)] };
+      }
+      transition(state, issue.number, "REVIEWING", { reviewHeadSha: commit.sha, reviewerStatus: "SUCCEEDED", reviewerFinishedAt: new Date().toISOString(), reviewFindings: review.findings, reviewEvidence: review.evidence, reviewUrl });
+      await saveState(stateFile, state);
       if (review.decision === "NEEDS_HUMAN") {
         transition(state, issue.number, "NEEDS_HUMAN", { reason: review.findings.join("; ") || "Reviewer requested human decision" });
         await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
@@ -138,12 +160,16 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       }
       if (review.decision === "CHANGES_REQUESTED") {
         feedback = review.findings.join("; ") || "Reviewer requested changes";
+        transition(state, issue.number, "REVIEW_CHANGES_REQUESTED", { reason: feedback });
+        await saveState(stateFile, state);
         transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback });
         await saveState(stateFile, state);
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
         continue;
       }
+      transition(state, issue.number, "REVIEW_APPROVED", { reviewHeadSha: commit.sha });
+      await saveState(stateFile, state);
       if (!config.autoMerge) {
         transition(state, issue.number, "PR_OPEN", { headSha: commit.sha, reviewHeadSha: commit.sha });
         await saveState(stateFile, state);

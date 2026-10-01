@@ -12,9 +12,9 @@ export class CodexRunError extends Error {
 export class CodexRunner {
   constructor(private readonly root: string, private readonly model?: string, private readonly processRunner: typeof runProcess = runProcess) {}
 
-  private async execute(prompt: string, schema: string, outputName: string, cwd: string, timeoutMs: number): Promise<CodexExecution> {
+  private async execute(prompt: string, schema: string, outputName: string, cwd: string, timeoutMs: number, sandbox: "workspace-write" | "read-only" = "workspace-write"): Promise<CodexExecution> {
     const outputPath = join(tmpdir(), `ai-factory-${process.pid}-${outputName}.json`);
-    const args = ["exec", "--sandbox", "workspace-write", "--json", "--output-schema", join(this.root, "automation", "schemas", schema), "-o", outputPath];
+    const args = ["exec", "--sandbox", sandbox, "--json", "--output-schema", join(this.root, "automation", "schemas", schema), "-o", outputPath];
     if (this.model) args.push("--model", this.model);
     args.push("-");
     const command = process.platform === "win32" ? "codex.cmd" : "codex";
@@ -43,7 +43,7 @@ export class CodexRunner {
   }
 
   async reviewer(prompt: string, cwd: string, timeoutMs: number): Promise<ReviewResult> {
-    const execution = await this.execute(prompt, "review-result.json", "review-result", cwd, timeoutMs);
+    const execution = await this.execute(prompt, "review-result.json", "review-result", cwd, timeoutMs, "read-only");
     return parseReviewResult(execution.result);
   }
 }

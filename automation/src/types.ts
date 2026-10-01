@@ -4,6 +4,10 @@ export type StoryStatus =
   | "PR_OPEN"
   | "VERIFYING"
   | "REVIEWING"
+  | "REVIEW_APPROVED"
+  | "REVIEW_CHANGES_REQUESTED"
+  | "REVIEW_FAILED"
+  | "QUEUED_FOR_REVIEW"
   | "FIXING"
   | "MERGED"
   | "DONE"
@@ -79,6 +83,7 @@ export interface OrchestrationConfig {
   logDirectory: string;
   /** Optional repository-relative prefixes allowed for a story change. */
   allowedChangePaths?: string[];
+  runId?: string;
 }
 
 export interface StoryState {
@@ -97,6 +102,14 @@ export interface StoryState {
   changedFiles?: string[];
   sourceIssueUrl?: string;
   pullRequestUrl?: string;
+  reviewerStatus?: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "LOST";
+  reviewerStartedAt?: string;
+  reviewerFinishedAt?: string;
+  reviewSha?: string;
+  reviewFindings?: string[];
+  reviewEvidence?: string[];
+  reviewPublicationKey?: string;
+  reviewUrl?: string;
 }
 
 export interface PersistedState {

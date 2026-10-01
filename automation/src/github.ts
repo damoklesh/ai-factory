@@ -9,6 +9,7 @@ export interface GitHubClient {
   getChecks(headSha: string): Promise<CheckRun[]>;
   createPullRequest(input: { title: string; body: string; headBranch: string; baseBranch: string }): Promise<PullRequest>;
   updatePullRequest?(number: number, input: { title: string; body: string }): Promise<PullRequest>;
+  publishPullRequestReview?(number: number, input: { body: string; changesRequested: boolean; idempotencyKey: string }): Promise<{ url?: string }>;
   setIssueLabels(issueNumber: number, labels: string[]): Promise<void>;
   closeIssue(issueNumber: number): Promise<void>;
   comment(issueNumber: number, body: string): Promise<void>;
@@ -96,6 +97,10 @@ export class RestGitHubClient implements GitHubClient {
   async updatePullRequest(number: number, input: { title: string; body: string }): Promise<PullRequest> {
     const item = await this.request<{ number: number; title: string; body: string | null; state: "open" | "closed"; merged_at: string | null; head: { ref: string; sha: string }; base: { ref: string } }>(this.path(`/pulls/${number}`), { method: "PATCH", body: JSON.stringify(input) });
     return { number: item.number, title: item.title, body: item.body || "", state: item.state, merged: Boolean(item.merged_at), headBranch: item.head.ref, headSha: item.head.sha, baseBranch: item.base.ref };
+  }
+  async publishPullRequestReview(number: number, input: { body: string; changesRequested: boolean; idempotencyKey: string }): Promise<{ url?: string }> {
+    const item = await this.request<{ html_url?: string }>(this.path(`/pulls/${number}/reviews`), { method: "POST", body: JSON.stringify({ body: `[ai-factory-review:${input.idempotencyKey}]\n\n${input.body}`, event: input.changesRequested ? "REQUEST_CHANGES" : "COMMENT" }) });
+    return { url: item.html_url };
   }
 
   async setIssueLabels(issueNumber: number, labels: string[]): Promise<void> { await this.request(this.path(`/issues/${issueNumber}/labels`), { method: "PUT", body: JSON.stringify({ labels }) }); }

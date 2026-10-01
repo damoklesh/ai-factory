@@ -61,13 +61,18 @@ test("rejects extra malformed result shapes", () => {
 
 test("executes Codex with schema output and classifies auth/quota failures", async () => {
   let outputPath = "";
+  let reviewerArgs: string[] = [];
   const fakeRunner = async (_command: string, args: string[], _options: { cwd: string; input?: string; timeoutMs: number }) => {
     outputPath = args[args.indexOf("-o") + 1];
     await writeFile(outputPath, JSON.stringify({ summary: "implemented", tests: ["npm test"], risks: [] }));
     return { code: 0, stdout: "{}", stderr: "", timedOut: false };
   };
-  const runner = new CodexRunner(process.cwd(), undefined, fakeRunner);
+  const runner = new CodexRunner(process.cwd(), undefined, async (command, args, options) => { if (args.includes("review-result.json")) reviewerArgs = args; return fakeRunner(command, args, options); });
   assert.equal((await runner.developer("implement", process.cwd(), 1000)).summary, "implemented");
+  // A reviewer receives a distinct read-only sandbox invocation.
+  const reviewRunner = new CodexRunner(process.cwd(), undefined, async (_command, args, options) => { reviewerArgs = args; const path = args[args.indexOf("-o") + 1]; await writeFile(path, JSON.stringify({ decision: "PASS", findings: [], evidence: [] })); return { code: 0, stdout: "{}", stderr: "", timedOut: false }; });
+  await reviewRunner.reviewer("review", process.cwd(), 1000);
+  assert.equal(reviewerArgs[reviewerArgs.indexOf("--sandbox") + 1], "read-only");
   await assert.rejects(() => access(outputPath), /ENOENT/);
   const authRunner = new CodexRunner(process.cwd(), undefined, async () => ({ code: 1, stdout: "", stderr: "login required", timedOut: false }));
   await assert.rejects(() => authRunner.developer("implement", process.cwd(), 1000), (error: CodexRunError) => error.kind === "AUTH");
