@@ -20,6 +20,7 @@ test("pause is a request, resume is explicit, and restart marks active work inte
   const history = await restarted.runs();
   assert.equal(history[0].status, "INTERRUPTED");
   assert.match(history[0].interruptionReason || "", /restarted/);
+  assert.match((await restarted.logs(started.runId)).entries.at(-1)?.message || "", /restarted/);
   const resumed = await restarted.control(started.runId, "resume");
   assert.equal(resumed.status, "ACTIVE");
 });
@@ -29,7 +30,9 @@ test("event replay returns persisted events after the requested cursor", async (
   const controller = new LocalController(new AgentPersistence(root));
   const run = await controller.start({ maxStories: 1, autoMerge: false });
   await controller.control(run.runId, "pause");
-  const replay = await controller.eventsSince(1);
-  assert.equal(replay.length, 1);
-  assert.match(replay[0].message, /pause/);
+  const replay = await controller.eventsSince(1, run.runId);
+  assert.equal(replay.length, 2);
+  assert.deepEqual(replay.map((event) => event.sequence), [2, 3]);
+  assert.equal(new Set(replay.map((event) => event.eventId)).size, replay.length);
+  assert.match(replay[1].message, /pause/);
 });

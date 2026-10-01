@@ -7,6 +7,9 @@ const defaults: AppConfigView = {
   owner: "OWNER",
   repo: "REPO",
   baseBranch: "main",
+  targetRepository: "OWNER/REPO",
+  targetBranch: "main",
+  targetBacklogPath: "backlog",
   validationCommands: [],
   requiredChecks: [],
   maxStories: 1,
@@ -24,7 +27,9 @@ export function configFilePath(configPath = process.env.AI_FACTORY_CONFIG): stri
 export function loadAppConfig(configPath?: string): AppConfigView {
   try {
     const source = JSON.parse(readFileSync(configFilePath(configPath), "utf8")) as Partial<AppConfigView>;
-    return { ...defaults, ...source, validationCommands: source.validationCommands || [], requiredChecks: source.requiredChecks || [] };
+    const targetRepository = source.targetRepository || (source.owner && source.repo ? `${source.owner}/${source.repo}` : defaults.targetRepository!);
+    const [owner, repo] = targetRepository.split("/", 2);
+    return { ...defaults, ...source, owner, repo, targetRepository, baseBranch: source.targetBranch || source.baseBranch || defaults.baseBranch, targetBranch: source.targetBranch || source.baseBranch || defaults.targetBranch, validationCommands: source.validationCommands || [], requiredChecks: source.requiredChecks || [] };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...defaults };
     throw error;

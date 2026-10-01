@@ -9,9 +9,13 @@ npm ci
 npm run dev
 ```
 
-It listens on `http://127.0.0.1:3333` by default. `npm run start` uses the same production build and local controller. Opening the page only reads project state; it never starts a run. Mutations require the browser session cookie and an exact same-origin `Origin` header. GitHub and Codex diagnostics are displayed without exposing credentials.
+It listens on `http://127.0.0.1:3333` by default. `npm run start` uses the same production build and local controller. Opening the page only reads project state; it never starts a run. Paste a local target path in **Target project**, inspect the canonical Git root, branch, remotes, dirty state, and backlog, and only then start work. The AI Factory repository itself is rejected as a normal target. Mutations require the browser session cookie and an exact same-origin `Origin` header. GitHub and Codex diagnostics are displayed without exposing credentials.
 
-The UI packages are `ui/` (React), `server/` (Node HTTP API and local controller), and `packages/contracts/` (shared TypeScript contracts). Markdown stories are read from `backlog/` when that directory exists. Operational state is written to `.agent/`, which remains ignored by Git.
+The UI packages are `ui/` (React), `server/` (Node HTTP API and local controller), and `packages/contracts/` (shared TypeScript contracts). Markdown stories are read from `backlog/` under the selected target Git root. A non-Git directory is initialized only after the exact canonical path is typed as confirmation. Operational state and recent-project metadata are written per target under AI Factory's ignored `.agent/projects/<projectId>/`; nothing operational is written into the target checkout.
+
+From **Executions**, choose one valid story or deterministic **next eligible** selection. The local API writes a run-specific, secret-free config and story contract, then spawns the trusted `automation/dist/src/orchestrator.js` from this base checkout. Codex itself runs only in the isolated target story worktree. A run is marked `ACTIVE` only after spawn succeeds, is limited to one story, and always has `autoMerge: false`; spawn/config failures remain visible as durable failed runs. Before commit/push, the automation package inspects the changed paths and refuses controller policy, CI workflow, operational-state, and secret-like files rather than using `git add -A`.
+
+V1 serializes execution per target project. A second start for the same target is rejected by an atomic PID/host lock; different targets can run concurrently when their worktrees and resources are independent. The in-memory execution guard remains defense in depth.
 
 Useful commands:
 
@@ -95,7 +99,7 @@ For a real pilot:
 - GitHub Actions enabled and repository workflow permissions configured.
 - Two small disposable Issues using the story template.
 
-The controller does not register runners, change branch rules, create Issues, or configure GitHub on your behalf.
+The controller does not register runners, change branch rules, or configure GitHub on your behalf. In the Backlog tab, **Preview Issue changes** classifies each story as create, update, unchanged, or conflict. A separate confirmation performs only the listed writes. Stable `<!-- ai-factory:story-id=US-### -->` markers and a secret-free per-project sync baseline make repeated publication idempotent. Remote edits become conflicts and are not overwritten unless the user explicitly chooses the local version. **Refresh GitHub state** is a separate read operation for Issue, PR, check, and merge facts.
 
 ## Configuration
 
@@ -116,12 +120,16 @@ Copy-Item config.example.json config.json
 
 | Setting | Purpose | Typical value / default |
 | --- | --- | --- |
-| `owner`, `repo` | GitHub repository | required; replace `OWNER`/`REPO` |
-| `baseBranch` | Branch used for new worktrees and PRs | `main` |
+| `controlRepository` | Repository containing this trusted controller | informational safety check, e.g. `OWNER/ai-factory` |
+| `targetRepository` | Repository whose Issues, code, branches, and PRs are managed | required, e.g. `OWNER/revenue-net-calculator` |
+| `targetBranch` | Branch used for target worktrees and PRs | `main` |
+| `targetBacklogPath` | Markdown backlog path inside the target repository | `backlog` |
+| `targetWorkspace` | Local checkout path, relative to the `ai-factory` repository root or absolute | `../workspaces/TARGET-REPOSITORY` |
+| `owner`, `repo`, `baseBranch` | Legacy aliases for the target repository and branch | supported for migration |
 | `runnerLabel` | Intended runner label | `ai-local`; currently also set in the workflow |
 | `model` | Optional Codex model override | empty |
 | `validationCommands` | Commands repeated by the controller in the worktree | project-specific, e.g. `npm test` |
-| `smokeCommands` | Reserved project smoke commands | currently not executed; see the gap analysis |
+| `smokeCommands` | Project smoke commands | run after deterministic validation succeeds, with the same workflow timeout |
 | `requiredChecks` | Exact GitHub check names required for the PR SHA | project-specific, e.g. `automation` |
 | `timeouts.codexMinutes` | Per Codex invocation timeout | `45` |
 | `timeouts.ciMinutes` | Required-check polling timeout | `20` |
@@ -136,7 +144,7 @@ Copy-Item config.example.json config.json
 
 | Name / setting | Where it belongs | Required for |
 | --- | --- | --- |
-| `AGENT_GH_TOKEN` | GitHub Actions secret or runner environment | Real GitHub API operations |
+| `AGENT_GH_TOKEN` | GitHub Actions secret or runner environment | Target clone, Issues, PRs, pushes, and checks |
 | `GITHUB_TOKEN` | Native Actions token fallback | Supported fallback, but the fine-grained PAT is preferred |
 | Codex ChatGPT login | Local Codex profile of the runner user | Developer and Reviewer invocations |
 | `AI_FACTORY_CONFIG` | Runner environment variable | Config outside `automation/config.json` |
@@ -145,7 +153,7 @@ Copy-Item config.example.json config.json
 | `agent:ready`, `agent:running`, `agent:blocked`, `agent:done` | GitHub Issue labels | Visible state and selection |
 | `ai-local` | Self-hosted runner label | Workflow routing |
 
-The fine-grained PAT should be restricted to the pilot repository and granted only the required Contents, Issues, Pull requests, Checks, and Actions read permissions. Never put the PAT, Codex auth files, or runner registration token in this repository or in prompts. Rotate the PAT and set an expiry.
+The fine-grained PAT should be restricted to the target repository and granted only the required Contents read/write, Issues read/write, Pull requests read/write, Checks read, Actions read, and Metadata read permissions. Never put the PAT, Codex auth files, or runner registration token in this repository or in prompts. Rotate the PAT and set an expiry.
 
 The GitHub Actions workflow also needs repository settings that allow the selected workflow to run and permit the intended PR/Issue operations. Branch protection, required approvals, and merge rules can intentionally stop the controller; do not weaken them to force automation through.
 
@@ -155,7 +163,7 @@ From the repository root, configure the repository and token before starting the
 
 ```powershell
 Copy-Item automation/config.example.json automation/config.json
-# Edit automation/config.json and replace OWNER/REPO with the real values.
+# Edit automation/config.json and set targetRepository and targetBranch.
 $env:AGENT_GH_TOKEN = "<fine-grained-token>"
 npm run dev
 ```
@@ -171,10 +179,14 @@ npm ci
 npm run doctor
 npm test
 npm run orchestrate -- --dry-run
+npm run sync-backlog -- --dry-run
+npm run sync-backlog
 npm run orchestrate -- --mock --max-stories 2
 ```
 
 `doctor` reports missing config, authentication, and (when config/token are present) GitHub repository access without printing token values. Missing config/auth warnings are expected on a fresh checkout; missing Node, npm, Git, or Codex is a failing prerequisite.
+
+`sync-backlog --dry-run` previews stories that would be created. Run `sync-backlog` from `automation/` after the target checkout is available. It creates an Issue only when the stable `AI_FACTORY_STORY_ID` marker is not already present. The normal orchestrator then reads Issues from `targetRepository` and works only in its target workspace.
 
 The configured real run is intentionally explicit:
 
@@ -214,6 +226,61 @@ runs-on: [self-hosted, linux, ai-local]
 ```
 
 Therefore a native Windows runner is not enough for the current workflow. On a Windows machine, use WSL2 with Ubuntu, or change the workflow deliberately after human review.
+
+#### Arrancar un runner ya instalado en Windows
+
+Si ya has instalado y registrado el runner directamente en Windows, no tienes que ejecutar otra vez `config.cmd`. Para arrancarlo manualmente:
+
+1. Abre **PowerShell** con el mismo usuario que registró el runner.
+2. Ve a la carpeta donde lo instalaste, por ejemplo:
+
+```powershell
+cd C:\actions-runner
+```
+
+3. Arráncalo:
+
+```powershell
+.\run.cmd
+```
+
+4. Mantén esa ventana abierta. En GitHub debe aparecer como **Idle** en:
+
+```text
+Settings > Actions > Runners
+```
+
+Mientras el proceso esté ejecutándose, el runner puede recibir trabajos. Para detenerlo, pulsa `Ctrl+C` en esa ventana.
+
+También puedes instalarlo como servicio de Windows para que arranque automáticamente:
+
+```powershell
+cd C:\actions-runner
+.\svc.cmd install
+.\svc.cmd start
+Get-Service | Where-Object { $_.Name -like '*actions.runner*' }
+```
+
+Para detener o desinstalar el servicio:
+
+```powershell
+.\svc.cmd stop
+.\svc.cmd uninstall
+```
+
+Importante: el workflow actual solicita Linux:
+
+```yaml
+runs-on: [self-hosted, linux, ai-local]
+```
+
+Por tanto, un runner nativo de Windows permanecerá disponible pero no recibirá ese workflow. Para usarlo hay que cambiar deliberadamente el workflow a, por ejemplo:
+
+```yaml
+runs-on: [self-hosted, windows, ai-local]
+```
+
+Ese cambio requiere revisión porque los comandos del workflow deben adaptarse de Bash (`./run.sh`) a PowerShell/Windows (`run.cmd`). El runner de GitHub Actions y el orquestador local (`npm run orchestrate`) son procesos distintos; arrancar uno no arranca automáticamente el otro.
 
 ### 1. Install WSL2 on Windows
 
@@ -435,13 +502,17 @@ Validation and smoke commands are configuration-controlled shell commands. Keep 
 ## Tests and coverage
 
 ```bash
-cd automation
-npm test
-npm run coverage
+npm ci
+npm run test:unit
+npm run test:integration
+npm run test:e2e
+npm run test:all
+
+cd automation && npm run coverage
 ```
 
-The coverage command enforces approximately 60% coverage on the controller code while excluding bootstrap/configuration/type-only modules. The suite covers contract parsing, dependency selection, state persistence/reconciliation, result schemas, SHA-bound checks and merges, process/validation behavior, REST client mapping, and CLI mock/dry-run paths. A real GitHub/Codex run remains a pilot test because it requires external credentials and infrastructure.
+The three product layers are reported separately. Unit and integration tests use temporary repositories and local doubles; the Playwright E2E starts a local server with fake GitHub/Codex behavior and makes no external requests. On browser failure, screenshots, video, trace and server context are retained under `.artifacts/playwright/` (ignored by Git and uploaded by CI for seven days). `test:all` also runs the automation package suite. The automation coverage command enforces its documented thresholds. A real GitHub/Codex run remains a separate, opt-in pilot because it requires external credentials and infrastructure.
 
 ## Known limitations
 
-Read [`docs/architecture-gap-analysis.md`](docs/architecture-gap-analysis.md) before calling the pilot production-ready. In particular, Docker/Compose smoke execution, file logging, local process locking, full GitHub pagination/status contexts, and a complete end-to-end real-repository run still need follow-up work.
+Read [`docs/architecture-gap-analysis.md`](docs/architecture-gap-analysis.md) and [`docs/operations-runbook.md`](docs/operations-runbook.md) before calling the pilot production-ready. Docker/Compose lifecycle isolation, full GitHub pagination/status contexts, and a complete end-to-end real-repository run still need follow-up work.

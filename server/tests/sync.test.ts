@@ -7,24 +7,43 @@ import type { GithubObservation } from "@ai-factory/contracts";
 import { AgentPersistence } from "../src/persistence.js";
 import { LocalController } from "../src/controller.js";
 
+function storyDocument(id: string, title: string, metadata = ""): string { return `---\nstoryId: ${id}\ntitle: ${title}\npriority: 1\ndependencies: none\n${metadata}---\n# ${id} — ${title}\n\n## User Story\nAs a user, I want ${title.toLowerCase()} so that it is useful.\n\n## Scope\n- In scope: ${title}\n\n## Acceptance Criteria\n- [ ] AC-1: It works.\n\n## Validation\n- [ ] Run tests.\n`; }
+
 test("reconciles external merge, push invalidation and closed PR without claiming DONE", async () => {
   const root = await mkdtemp(join(tmpdir(), "ai-factory-sync-")); const backlog = join(root, "backlog"); await mkdir(backlog);
-  await writeFile(join(backlog, "US-1.md"), "---\nstoryId: US-1\ntitle: First\nheadSha: old-sha\npullRequestNumber: 1\n---\n# First", "utf8");
-  await writeFile(join(backlog, "US-2.md"), "---\nstoryId: US-2\ntitle: Second\n---\n# Second", "utf8");
+  await writeFile(join(backlog, "US-001.md"), storyDocument("US-001", "First", "headSha: old-sha\npullRequestNumber: 1\n"), "utf8");
+  await writeFile(join(backlog, "US-002.md"), storyDocument("US-002", "Second"), "utf8");
   const checkedAt = new Date().toISOString(); const observations: GithubObservation[] = [
-    { storyId: "US-1", pullRequestNumber: 1, headSha: "new-sha", validatedHeadSha: "old-sha", state: "OPEN", checks: "PASS", checkedAt },
-    { storyId: "US-2", pullRequestNumber: 2, headSha: "merged-sha", validatedHeadSha: "merged-sha", state: "MERGED", checks: "PASS", checkedAt },
+    { storyId: "US-001", pullRequestNumber: 1, headSha: "new-sha", validatedHeadSha: "old-sha", state: "OPEN", checks: "PASS", checkedAt },
+    { storyId: "US-002", pullRequestNumber: 2, headSha: "merged-sha", validatedHeadSha: "merged-sha", state: "MERGED", checks: "PASS", checkedAt },
   ];
   const controller = new LocalController(new AgentPersistence(join(root, ".agent")), { backlogRoot: backlog, githubConnected: true, githubObservations: observations });
   const result = await controller.sync(); assert.equal(result.connected, true); assert.equal(result.changedStoryIds.length, 2);
-  const first = (await controller.story("US-1"))!; const second = (await controller.story("US-2"))!;
+  const first = (await controller.story("US-001"))!; const second = (await controller.story("US-002"))!;
   assert.equal(first.validationStatus, "STALE"); assert.equal(first.externalStatus, "OPEN"); assert.equal(second.deliveryStatus, "MERGED");
   const closed = new LocalController(new AgentPersistence(join(root, ".agent-closed")), { backlogRoot: backlog, githubConnected: true, githubObservations: [{ ...observations[0], state: "CLOSED" }] });
-  await closed.sync(); const closedStory = (await closed.story("US-1"))!; assert.equal(closedStory.deliveryStatus, "PR_OPEN"); assert.equal(closedStory.externalStatus, "CLOSED");
+  await closed.sync(); const closedStory = (await closed.story("US-001"))!; assert.equal(closedStory.deliveryStatus, "PR_OPEN"); assert.equal(closedStory.externalStatus, "CLOSED");
 });
 
 test("degrades without GitHub and keeps the last facts stale", async () => {
   const controller = new LocalController(new AgentPersistence(await mkdtemp(join(tmpdir(), "ai-factory-offline-"))));
   const result = await controller.sync(); assert.equal(result.connected, false); assert.equal(result.stale, true); assert.match(result.message, /unavailable/i);
   assert.equal((await controller.project()).github.stale, true);
+});
+
+test("keeps last known GitHub facts and marks them stale after a refresh failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-stale-sync-")); const backlog = join(root, "backlog"); await mkdir(backlog); await writeFile(join(backlog, "US-001.md"), storyDocument("US-001", "First"), "utf8");
+  let fail = false; const checkedAt = new Date().toISOString(); const adapter = { async observe() { if (fail) throw new Error("GitHub API 429 rate limited"); return [{ storyId: "US-001", githubIssueNumber: 10, state: "OPEN" as const, checks: "PASS" as const, checkedAt }]; } };
+  const controller = new LocalController(new AgentPersistence(join(root, ".agent")), { backlogRoot: backlog, githubAdapter: adapter }); await controller.sync(); fail = true; const failed = await controller.sync();
+  assert.equal(failed.stale, true); const story = (await controller.story("US-001"))!; assert.equal(story.githubIssueNumber, 10); assert.equal(story.externalStatus, "OPEN"); assert.equal(story.externalStale, true);
+});
+
+test("projects the CLI orchestrator state into stories and executions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-external-state-")); const backlog = join(root, "backlog"); await mkdir(backlog);
+  await writeFile(join(backlog, "US-001-landing.md"), storyDocument("US-001", "Landing", "githubIssueNumber: 1\n"), "utf8");
+  const statePath = join(root, "automation", ".cache", "state.json"); await mkdir(join(root, "automation", ".cache"), { recursive: true });
+  await writeFile(statePath, JSON.stringify({ stories: { "1": { issueNumber: 1, branch: "agent/issue-1", status: "IMPLEMENTING", updatedAt: new Date().toISOString() } } }), "utf8");
+  const controller = new LocalController(new AgentPersistence(join(root, ".agent")), { backlogRoot: backlog, orchestratorStatePath: statePath });
+  const story = (await controller.listStories())[0]; const project = await controller.project(); const runs = await controller.runs();
+  assert.equal(story.executionStatus, "ACTIVE"); assert.equal(story.agentStatus, "IMPLEMENTING"); assert.equal(story.branch, "agent/issue-1"); assert.equal(project.counts.active, 1); assert.equal(runs[0].storyId, "US-001"); assert.equal(runs[0].phase, "IMPLEMENTING");
 });

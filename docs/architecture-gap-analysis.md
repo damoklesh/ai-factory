@@ -1,5 +1,44 @@
 # Architecture and user-story gap analysis
 
+## 2026-10-01 implementation baseline
+
+[`AI_Factory_Architecture_and_Roadmap.md`](../AI_Factory_Architecture_and_Roadmap.md)
+is the accepted architecture baseline for the next iteration. Architecture,
+controller, validation, CI, and merge-policy changes remain subject to human
+review. Local implementation commits do not imply approval, push, or merge.
+
+The proposal was written from `master` at
+`4a82311136602e475b036c0f7d2b4d697d0675eb`, while the inspected checkout is
+`main` at `99965f0034c5a50a705f02f3b353e0b8312e99ee`. The current branch already
+contains a React UI, local Node API, durable run data, human decision/spec-edit
+contracts, GitHub observation, and a separate CLI orchestrator. Therefore the
+roadmap is an incremental convergence plan, not authorization to replace those
+pieces.
+
+Confirmed implementation constraints:
+
+- The local UI/API is the V1 control plane; the Actions workflow remains a CI
+  or explicitly selected legacy entry point, never a concurrent controller for
+  the same target.
+- Target identity and paths must be explicit. Neither `process.cwd()` nor the
+  AI Factory checkout may silently become the target project.
+- Backlog Markdown in the selected target is canonical; GitHub Issues are an
+  idempotent collaboration mirror and external-state source.
+- Operational state belongs under ignored controller storage, outside the
+  target and story worktree.
+- A run is not `ACTIVE` before a real child process has spawned. Unknown live
+  state after restart becomes `INTERRUPTED`, not active or successful.
+- `autoMerge` remains `false` by default. No push or merge is implied by the
+  UI, and merge requires current spec revision, validated HEAD SHA, and human
+  approval.
+- Default automated tests use temporary repositories and fake GitHub/Codex
+  adapters, make no service calls, and require no credentials.
+
+Initial verification on this baseline passed both existing suites: root
+`npm test` (20 tests) and `automation/npm test` (25 tests). The sections below
+describe the older controller audit and remain as historical evidence until
+each roadmap story replaces its corresponding gap.
+
 Reviewed against [`AI_Factory_V1_Plan.md`](../AI_Factory_V1_Plan.md), the five construction user stories, the supplied Developer/Reviewer contracts, and the current TypeScript implementation.
 
 ## Implemented and aligned
@@ -22,17 +61,17 @@ Reviewed against [`AI_Factory_V1_Plan.md`](../AI_Factory_V1_Plan.md), the five c
 | Priority | Documented intent | Current implementation | Impact / recommended follow-up |
 | --- | --- | --- | --- |
 | High | US5 proves two small stories through the real GitHub flow | Mock mode proves selector ordering only; no real private-repository pilot has run | Run the disposable private-repository pilot after provisioning the runner, PAT, Codex login, CI, and Issues |
-| High | Docker/Compose smoke tests use isolated ports, health checks, real HTTP, and scoped cleanup | `smokeCommands` is loaded but never executed; there is no Docker lifecycle implementation | Implement a dedicated smoke runner before relying on integration services |
+| Medium | Docker/Compose smoke tests use isolated ports, health checks, real HTTP, and scoped cleanup | Configured `smokeCommands` now run after deterministic validation, but Docker-specific lifecycle isolation is not automated | Add a scoped Docker lifecycle helper before relying on Compose services |
 | High | State transitions include `VERIFYING` and `MERGED` | The controller goes from `PR_OPEN` to `REVIEWING` and then directly to `DONE` after merge | Add explicit verifying/merged transitions and tests so the operational state matches the plan |
-| High | Local lock prevents simultaneous controllers | GitHub Actions has repository concurrency, but direct local invocations have no lock file/OS lock | Add an atomic lock with stale-owner recovery before enabling local and Action triggers together |
-| Medium | Configured `runnerLabel`, `logDirectory`, and validation/smoke settings drive runtime | `runnerLabel` is hardcoded in the workflow, `logDirectory` is unused, and `smokeCommands` is unused | Either implement these fields or remove them from the public config until supported |
+| Medium | Local lock prevents simultaneous controllers | Project-scoped atomic PID/host lock now protects direct local invocations; cross-machine lock ownership remains conservative | Keep stale-owner recovery tests and document operator cleanup |
+| Medium | Configured `runnerLabel`, `logDirectory`, and validation/smoke settings drive runtime | Validation and smoke settings drive execution; `runnerLabel` remains workflow-owned and `logDirectory` is represented by controller event storage | Align or remove the remaining legacy CLI-only fields |
 | Medium | Controller repeats validation and records logs outside the worktree | Validation output is held in memory/stdout; no structured log files are written | Add bounded structured logs outside worktrees, with secret-safe redaction and retention guidance |
 | Medium | CI adapts to the pilot project | `ci.yml` only runs the automation package tests and does not run project-specific commands | Add project commands to the pilot CI workflow or document the project-specific CI workflow as required |
 | Medium | GitHub checks can represent required checks | Only GitHub Check Runs are queried; legacy commit statuses and skipped/neutral policy are not modeled | Support status contexts and define explicit conclusions accepted as pass |
 | Medium | Startup reconciles branch, PR, and durable state | Existing open PRs are found by stable branch and state is reloaded, but merged/closed PRs, stale labels, and base-branch freshness are not comprehensively reconciled | Add a reconciliation phase with explicit tests before resuming complex interrupted runs |
 | Medium | GitHub API operations use the least necessary permissions and robust pagination | The REST client reads one page of Issues/PRs and the doctor only confirms repository readability, not write permissions | Add pagination and permission probes or document the small-backlog limitation clearly |
 | Medium | The controller owns safe commits | `git add -A` commits every worktree change made by Developer, including unreviewed generated files | Add an allow/deny policy for controller/config paths and inspect the diff before commit |
-| Low | Codex child processes are terminated cleanly on cancellation | Timeout calls `child.kill`, but there is no process-tree cleanup or cancellation signal propagation | Add process-group cancellation and an integration test for descendants |
+| Low | Codex child processes are terminated cleanly on cancellation | Process groups/taskkill tree cleanup and cancellation classification are implemented; descendant-specific fixtures remain limited | Add a descendant fixture when the pilot needs nested process coverage |
 | Low | Issue template follows the parser contract | The parser now accepts both hand-written `##` and GitHub-form `###` headings | Fixed in this audit; retain the regression test |
 
 ## User-story acceptance audit

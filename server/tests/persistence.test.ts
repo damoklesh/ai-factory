@@ -36,3 +36,11 @@ test("redacts secrets and reads large logs page by page", async () => {
   const second = await persistence.readEventsPage("run-1", { cursor: first.nextCursor, limit: 50 });
   assert.equal(second.entries[0].sequence, 51);
 });
+
+test("bounds individual output, rotates logs, and prunes old run snapshots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-limits-")); const persistence = new AgentPersistence(root, { maxEventBytes: 500, maxRuns: 2 });
+  for (let sequence = 1; sequence <= 4; sequence += 1) await persistence.appendEvent("run-current", { ...event(sequence), runId: "run-current", message: `${"x".repeat(300)} TOKEN=secret-${sequence}` });
+  const page = await persistence.readEventsPage("run-current"); assert.equal(page.truncated, true); assert.ok(page.entries.every((entry) => entry.message.length <= 32_000 && !entry.message.includes("secret")));
+  for (let index = 1; index <= 3; index += 1) await persistence.writeSnapshot(`run-${index}`, { schemaVersion: 1, runId: `run-${index}`, status: "FINISHED", phase: "FINISHED", startedAt: `2026-01-0${index}`, updatedAt: `2026-01-0${index}`, attempts: 1, maxStories: 1, autoMerge: false, validationStatus: "PASS", effectiveConfigRevision: "config-1" });
+  assert.deepEqual((await persistence.listSnapshots()).map((snapshot) => snapshot.runId), ["run-3", "run-2"]);
+});

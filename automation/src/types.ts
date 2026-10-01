@@ -4,6 +4,13 @@ export type StoryStatus =
   | "PR_OPEN"
   | "VERIFYING"
   | "REVIEWING"
+  | "REVIEW_APPROVED"
+  | "REVIEW_CHANGES_REQUESTED"
+  | "REVIEW_FAILED"
+  | "QUEUED_FOR_REVIEW"
+  | "READY_FOR_MERGE"
+  | "MERGE_PENDING_APPROVAL"
+  | "MERGE_FAILED"
   | "FIXING"
   | "MERGED"
   | "DONE"
@@ -47,6 +54,8 @@ export interface CheckRun {
   headSha: string;
 }
 
+export interface ReviewThread { id: string; headSha: string; blocking: boolean; resolved: boolean; body?: string; file?: string; line?: number; }
+
 export interface ReviewResult {
   decision: "PASS" | "CHANGES_REQUESTED" | "NEEDS_HUMAN";
   findings: string[];
@@ -57,6 +66,11 @@ export interface OrchestrationConfig {
   owner: string;
   repo: string;
   baseBranch: string;
+  controlRepository?: string;
+  targetRepository: string;
+  targetBranch: string;
+  targetBacklogPath: string;
+  targetWorkspace?: string;
   runnerLabel: string;
   model?: string;
   validationCommands: string[];
@@ -72,6 +86,9 @@ export interface OrchestrationConfig {
   autoMerge: boolean;
   stateFile: string;
   logDirectory: string;
+  /** Optional repository-relative prefixes allowed for a story change. */
+  allowedChangePaths?: string[];
+  runId?: string;
 }
 
 export interface StoryState {
@@ -84,6 +101,23 @@ export interface StoryState {
   reviewHeadSha?: string;
   updatedAt: string;
   reason?: string;
+  startedAt?: string;
+  processStatus?: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED";
+  validation?: Array<{ command: string; passed: boolean; output: string }>;
+  changedFiles?: string[];
+  sourceIssueUrl?: string;
+  pullRequestUrl?: string;
+  reviewerStatus?: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "LOST";
+  reviewerStartedAt?: string;
+  reviewerFinishedAt?: string;
+  reviewSha?: string;
+  reviewFindings?: string[];
+  reviewEvidence?: string[];
+  reviewPublicationKey?: string;
+  reviewUrl?: string;
+  attemptId?: string;
+  fixerStatus?: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "LOST";
+  findingDispositions?: Record<string, "FIXED" | "NOT_APPLICABLE" | "NEEDS_HUMAN">;
 }
 
 export interface PersistedState {
@@ -96,4 +130,3 @@ export interface CodexExecution {
   errorOutput: string;
   result?: unknown;
 }
-

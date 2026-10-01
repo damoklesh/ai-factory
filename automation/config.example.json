@@ -1,7 +1,9 @@
 {
-  "owner": "OWNER",
-  "repo": "REPO",
-  "baseBranch": "main",
+  "controlRepository": "OWNER/ai-factory",
+  "targetRepository": "OWNER/TARGET-REPOSITORY",
+  "targetBranch": "main",
+  "targetBacklogPath": "backlog",
+  "targetWorkspace": "../workspaces/TARGET-REPOSITORY",
   "runnerLabel": "ai-local",
   "model": "",
   "validationCommands": [],

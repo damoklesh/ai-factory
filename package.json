@@ -3,14 +3,23 @@
   "version": "1.0.0",
   "private": true,
   "description": "Local React supervision UI and Node backend for AI Factory",
-  "workspaces": ["packages/contracts", "server", "ui"],
+  "workspaces": [
+    "packages/contracts",
+    "server",
+    "ui"
+  ],
   "scripts": {
-    "build": "npm run build --workspace @ai-factory/contracts && npm run build --workspace ai-factory-server && npm run build --workspace ai-factory-ui",
-    "test": "npm run build && node --test server/dist/tests/*.test.js ui/dist/tests/*.test.js",
+    "build": "npm run build --prefix automation && npm run build --workspace @ai-factory/contracts && npm run build --workspace ai-factory-server && npm run build --workspace ai-factory-ui",
+    "test": "npm run test:unit && npm run test:integration && npm run test:e2e",
+    "test:unit": "npm run build && node --test server/dist/tests/approvals.test.js server/dist/tests/backlog-sync.test.js server/dist/tests/config.test.js server/dist/tests/contracts.test.js server/dist/tests/editing.test.js server/dist/tests/github.test.js server/dist/tests/persistence.test.js server/dist/tests/runs.test.js server/dist/tests/stories.test.js server/dist/tests/sync.test.js",
+    "test:integration": "npm run build && node --test server/dist/tests/doctor.test.js server/dist/tests/execution.test.js server/dist/tests/http.test.js server/dist/tests/projects.test.js server/dist/tests/run-lock.test.js",
+    "test:e2e": "npm run build && playwright test",
+    "test:all": "npm test && npm test --prefix automation",
     "dev": "npm run build && npm run start --workspace ai-factory-server",
     "start": "npm run build && npm run start --workspace ai-factory-server"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.1",
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2"
   }

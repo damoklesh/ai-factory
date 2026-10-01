@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseStory, selectNextStory, validateDependencyGraph } from "../src/stories.js";
+import { parseStory, selectNextStory, storyEligibility, validateDependencyGraph } from "../src/stories.js";
 import { emptyState, canStartFix, reconcilePullRequest, transition } from "../src/state.js";
 import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { evaluateRequiredChecks } from "../src/checks.js";
 import { buildPullRequestBody, replaceAgentLabel } from "../src/github.js";
 import { parseArgs } from "../src/orchestrator.js";
-import { mergeReviewedPullRequest } from "../src/merge.js";
+import { evaluateMergeGate, mergeReviewedPullRequest } from "../src/merge.js";
 import { waitForRequiredChecks } from "../src/verify.js";
 import type { GitHubClient } from "../src/github.js";
 import type { Issue } from "../src/types.js";
@@ -31,6 +31,13 @@ test("parses headings emitted by the GitHub issue form", () => {
 test("blocks missing and cyclic dependencies", () => {
   assert.match(validateDependencyGraph([issue(2, 1, "#9")])[0], /missing #9/);
   assert.ok(validateDependencyGraph([issue(1, 1, "#2"), issue(2, 2, "#1")]).some((item) => item.includes("cycle")));
+});
+
+test("reports exact reasons for stories that cannot start", () => {
+  assert.match(storyEligibility({ ...issue(4, 1), labels: ["agent:blocked"] }, [issue(4, 1)], new Set()) || "", /blocked/);
+  assert.match(storyEligibility(issue(5, 1, "#9"), [issue(5, 1, "#9")], new Set()) || "", /missing dependency #9/);
+  assert.match(storyEligibility({ ...issue(6, 1), state: "closed" }, [issue(6, 1)], new Set()) || "", /not open/);
+  assert.match(storyEligibility(issue(7, 1, "#8"), [issue(7, 1, "#8"), issue(8, 2)], new Set()) || "", /unmet dependency #8/);
 });
 
 test("reconciles an existing stable PR and enforces fix limits", () => {
@@ -66,7 +73,12 @@ test("evaluates checks only for the current head SHA", () => {
 
 test("uses stable issue branches and preserves non-agent labels", () => {
   assert.deepEqual(replaceAgentLabel(["bug", "agent:ready", "agent:blocked"], "agent:running"), ["bug", "agent:running"]);
-  assert.match(buildPullRequestBody(12, "agent/issue-12"), /Issue: #12/);
+  const body = buildPullRequestBody(12, "agent/issue-12", { storyId: "US-012", objective: "Ship it", acceptanceCriteria: ["It works"], validation: [{ command: "npm test", passed: true }], sourceIssueUrl: "https://github.com/o/r/issues/12" });
+  assert.match(body, /Story: US-012/);
+  assert.match(body, /Objective[\s\S]*Ship it/);
+  assert.match(body, /Acceptance criteria[\s\S]*It works/);
+  assert.match(body, /PASS npm test/);
+  assert.match(body, /https:\/\/github.com\/o\/r\/issues\/12/);
   assert.equal(parseArgs(["--max-stories", "2", "--auto-merge"]).autoMerge, true);
 });
 
@@ -80,4 +92,16 @@ test("waits for current-SHA CI and blocks a changed PR head at merge", async () 
   const result = await waitForRequiredChecks(client, "new", ["CI"], 1000, 0);
   assert.equal(result.decision, "PASS");
   await assert.rejects(() => mergeReviewedPullRequest(client, 12, "reviewed"), /stale/);
+});
+
+test("merge gate requires current review, green current-SHA checks and no blockers", () => {
+  const checks = [{ name: "CI", status: "completed" as const, conclusion: "success", headSha: "sha" }];
+  const noThreads = { available: true, threads: [] };
+  assert.equal(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: noThreads }).ready, true);
+  assert.match(evaluateMergeGate({ currentSha: "new", reviewedSha: "old", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: noThreads }).reason || "", /stale/);
+  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [], requiredChecks: ["CI"], reviewThreads: noThreads }).reason || "", /missing/);
+  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: { available: true, threads: [{ id: "1", headSha: "sha", blocking: true, resolved: false }] } }).reason || "", /unresolved/);
+  assert.equal(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: { available: true, threads: [{ id: "1", headSha: "sha", blocking: true, resolved: true }, { id: "2", headSha: "sha", blocking: false, resolved: false }, { id: "3", headSha: "old", blocking: true, resolved: false }] } }).ready, true);
+  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: { available: false, threads: [], reason: "provider unavailable" } }).reason || "", /unavailable/);
+  assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [], requiredChecks: [] , reviewThreads: noThreads }).reason || "", /no required checks configured/i);
 });
