@@ -39,8 +39,8 @@ export function parseArgs(args: string[]): CliOptions {
   return options;
 }
 
-function storyPrompt(issue: Issue, contract: StoryContract, feedback = "", instructions: string[] = []): string {
-  return [`Implement GitHub Issue #${issue.number}: ${issue.title}`, `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Scope: ${contract.scope}`, `Validation: ${contract.validation.join("; ") || "use configured validation commands"}`, feedback ? `Feedback from the previous gate:\n${feedback}` : "", instructions.length ? `Additional human instructions for this invocation:\n${instructions.map((item) => `- ${item}`).join("\n")}` : "", "Work only in the current worktree. Do not change controller policy, CI protections, or credentials. End with the required JSON result."].filter(Boolean).join("\n");
+function storyPrompt(issue: Issue, contract: StoryContract, feedback = "", instructions: string[] = [], attemptId = "implement-0"): string {
+  return [`Implement GitHub Issue #${issue.number}: ${issue.title}`, `Attempt: ${attemptId}`, `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Scope: ${contract.scope}`, `Validation: ${contract.validation.join("; ") || "use configured validation commands"}`, feedback ? `Feedback from the previous gate (only unresolved findings for the prior SHA):\n${feedback}` : "", instructions.length ? `Additional human instructions for this invocation:\n${instructions.map((item) => `- ${item}`).join("\n")}` : "", "Work only in the current worktree. Do not change controller policy, CI protections, or credentials. Do not declare review clean or merge. End with the required JSON result."].filter(Boolean).join("\n");
 }
 
 function reviewPrompt(issue: Issue, contract: StoryContract, diff: string, validationOutput: string, snapshot: { storyId: string; runId: string; pullRequest: number; sha: string }): string {
@@ -76,18 +76,19 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
     worktree = await createWorktree(root, config.targetBranch, branch, { env: target.env });
     const codex = new CodexRunner(target.controlRoot, config.model);
     for (let cycle = firstCycle; cycle <= config.maxFixCycles; cycle += 1) {
-      transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined });
+      const attemptId = `${config.runId || "cli"}:${issue.number}:${cycle === 0 ? "implement" : "fix"}-${cycle}`;
+      transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined, attemptId, fixerStatus: cycle === 0 ? undefined : "STARTING" });
       await saveState(stateFile, state);
       try {
         emitOperationalEvent({ source: "developer", phase: cycle === 0 ? "IMPLEMENTING" : "FIXING", message: `Developer agent started for issue #${issue.number}, cycle ${cycle}${instructions.length ? ` with ${instructions.length} human instruction(s)` : ""}` });
-        transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { processStatus: "RUNNING", reason: feedback || undefined });
+        transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { processStatus: "RUNNING", fixerStatus: cycle === 0 ? undefined : "RUNNING", reason: feedback || undefined });
         await saveState(stateFile, state);
-        await codex.developer(storyPrompt(issue, contract, feedback, instructions), worktree.path, config.timeouts.codexMinutes * 60_000);
-        transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { processStatus: "SUCCEEDED" });
+        await codex.developer(storyPrompt(issue, contract, feedback, instructions, attemptId), worktree.path, config.timeouts.codexMinutes * 60_000);
+        transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { processStatus: "SUCCEEDED", fixerStatus: cycle === 0 ? undefined : "SUCCEEDED", findingDispositions: cycle === 0 ? undefined : Object.fromEntries((state.stories[String(issue.number)].reviewFindings || []).map((finding) => [finding, "FIXED" as const])) });
       } catch (error) {
         const kind = error instanceof CodexRunError ? error.kind : "FAILED";
         const status = kind === "AUTH" ? "PAUSED_AUTH" : kind === "QUOTA" ? "PAUSED_QUOTA" : "FAILED_INFRA";
-        transition(state, issue.number, status, { processStatus: kind === "AUTH" || kind === "QUOTA" ? "BLOCKED" : "FAILED", reason: error instanceof Error ? error.message : String(error) });
+        transition(state, issue.number, status, { processStatus: kind === "AUTH" || kind === "QUOTA" ? "BLOCKED" : "FAILED", fixerStatus: cycle === 0 ? undefined : "FAILED", reason: error instanceof Error ? error.message : String(error) });
         await saveState(stateFile, state);
         await mark(client, issue, "agent:blocked");
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], state.stories[String(issue.number)].reason || "Codex failed"));
@@ -99,7 +100,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       const validationEvidence = validation.map((item) => ({ command: item.command, passed: item.passed, output: item.output.slice(0, 4_000) }));
       if (!validationsPassed(validation)) {
         feedback = `Local validation failed:\n${validationText}`;
-        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback });
+        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
         await saveState(stateFile, state);
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         continue;
@@ -115,7 +116,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       const checks = await waitForRequiredChecks(client, commit.sha, config.requiredChecks, config.timeouts.ciMinutes * 60_000);
       if (checks.decision === "FAIL") {
         feedback = `Required CI checks failed or timed out for SHA ${commit.sha}.`;
-        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback });
+        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
         await saveState(stateFile, state);
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
@@ -162,7 +163,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         feedback = review.findings.join("; ") || "Reviewer requested changes";
         transition(state, issue.number, "REVIEW_CHANGES_REQUESTED", { reason: feedback });
         await saveState(stateFile, state);
-        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback });
+        transition(state, issue.number, "FIXING", { fixCycles: cycle + 1, reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
         await saveState(stateFile, state);
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
@@ -191,7 +192,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       await saveState(stateFile, state); await client.closeIssue(issue.number); await mark(client, issue, "agent:done");
       return { status: "DONE", state: state.stories[String(issue.number)] };
     }
-    transition(state, issue.number, "NEEDS_HUMAN", { reason: `maximum fix cycles (${config.maxFixCycles}) exhausted` });
+    transition(state, issue.number, "NEEDS_HUMAN", { reason: `maximum fix cycles (${config.maxFixCycles}) exhausted; attempts=${state.stories[String(issue.number)].fixCycles}; pullRequest=${state.stories[String(issue.number)].pullRequestNumber || "none"}; lastSha=${state.stories[String(issue.number)].headSha || "unknown"}; findings=${(state.stories[String(issue.number)].reviewFindings || []).join(" | ") || "none"}` });
     await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
     return { status: "NEEDS_HUMAN", state: state.stories[String(issue.number)] };
   } finally {

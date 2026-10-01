@@ -110,6 +110,9 @@ export interface StoryState {
   reviewEvidence?: string[];
   reviewPublicationKey?: string;
   reviewUrl?: string;
+  attemptId?: string;
+  fixerStatus?: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "LOST";
+  findingDispositions?: Record<string, "FIXED" | "NOT_APPLICABLE" | "NEEDS_HUMAN">;
 }
 
 export interface PersistedState {
