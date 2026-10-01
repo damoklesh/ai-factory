@@ -53,6 +53,8 @@ export class AgentPersistence {
   }
   async appendDecision(runId: string, decision: unknown): Promise<void> { await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "decisions.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(decision)}\n`, "utf8"); }); }
   async appendInstruction(runId: string, instruction: unknown): Promise<void> { await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "instructions.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(instruction)}\n`, "utf8"); }); }
+  async readDecisions<T extends object>(runId: string): Promise<T[]> { return this.readJsonLines<T>(join(this.root, "runs", runId, "decisions.jsonl")); }
+  async readInstructions<T extends object>(runId: string): Promise<T[]> { return this.readJsonLines<T>(join(this.root, "runs", runId, "instructions.jsonl")); }
   async writeMetadata(name: string, value: unknown): Promise<void> {
     if (!/^[a-z0-9.-]+\.json$/i.test(name)) throw new PersistenceError("invalid metadata file name");
     await this.serialized(async () => { await this.ensure(); const path = join(this.root, name); const temp = `${path}.${process.pid}.tmp`; await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8"); await rename(temp, path); });
@@ -107,6 +109,11 @@ export class AgentPersistence {
     }
     candidates.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     for (const candidate of candidates.slice(this.maxRuns)) await rm(join(this.root, "runs", candidate.name), { recursive: true, force: true });
+  }
+
+  private async readJsonLines<T extends object>(path: string): Promise<T[]> {
+    try { return (await readFile(path, "utf8")).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as T); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw new PersistenceError(`cannot read audit log ${path}`); }
   }
 }
 

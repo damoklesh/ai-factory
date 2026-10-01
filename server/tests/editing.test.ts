@@ -22,6 +22,7 @@ test("queues an instruction once and applies specification edits only after diff
   const saved = await controller.updateStorySpec("US-001", { markdown: storyMarkdown("New objective"), expectedRevision: story.specRevision, confirm: true, idempotencyKey: "edit-1" });
   assert.equal(saved.preview, false);
   assert.match(await readFile(join(backlog, "US-001.md"), "utf8"), /New objective/);
+  assert.equal((await controller.story("US-001"))?.validationStatus, "STALE");
   await assert.rejects(() => controller.updateStorySpec("US-001", { markdown: "bad", expectedRevision: story.specRevision, confirm: true, idempotencyKey: "edit-2" }), /VERSION_CONFLICT/);
   const run = await controller.start({ maxStories: 1, autoMerge: false });
   const paused = await controller.control(run.runId, "pause");

@@ -51,6 +51,15 @@ test("persists a terminal failure when spawn or configuration fails", async () =
   assert.equal(run.status, "FAILED"); assert.match(run.resultSummary || "", /fake spawn failure/); assert.equal((await controller.project()).activeRunId, undefined); assert.equal((await controller.runs())[0].status, "FAILED");
 });
 
+test("applies queued human instructions only to an explicit next invocation", async () => {
+  const execution = new FakeExecution(); const { controller } = await fixture(execution); const run = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "auto" });
+  execution.finish(0, { status: "BLOCKED", summary: "human clarification required" });
+  for (let attempt = 0; attempt < 20 && (await controller.run(run.runId))?.status !== "BLOCKED"; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  const instruction = await controller.addInstruction(run.runId, { content: "Inspect the edge case", expectedRunStatus: "BLOCKED", idempotencyKey: "next-only" }); assert.equal(instruction.status, "PENDING_NEXT_INVOCATION"); assert.equal(execution.contexts.length, 1);
+  const resumed = await controller.control(run.runId, "resume"); assert.equal(resumed.attempts, 2); assert.deepEqual(execution.contexts[1].instructions, ["Inspect the edge case"]);
+  assert.ok((await controller.logs(run.runId)).entries.some((entry) => /queued instruction.*applied/i.test(entry.message)));
+});
+
 test("spawns the trusted automation entrypoint with explicit target, story, run and manual-merge config", async () => {
   const root = await mkdtemp(join(tmpdir(), "ai-factory-child-execution-")); const control = join(root, "control"); const target = join(root, "target"); const scriptDir = join(control, "automation", "dist", "src"); const stateRoot = join(control, ".agent", "project"); await mkdir(scriptDir, { recursive: true }); await mkdir(target);
   await writeFile(join(scriptDir, "orchestrator.js"), "console.log(JSON.stringify({aiFactoryEvent:true,source:'developer',phase:'IMPLEMENTING',level:'INFO',message:'fake developer running',activity:'RUNNING'})); setTimeout(() => console.log('fake orchestrator done'), 200);\n", "utf8"); await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });

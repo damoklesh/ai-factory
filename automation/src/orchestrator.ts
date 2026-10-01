@@ -12,7 +12,7 @@ import { parseStory, selectNextStory, validateDependencyGraph } from "./stories.
 import { runValidation, validationsPassed, waitForRequiredChecks } from "./verify.js";
 import type { Issue, OrchestrationConfig, PullRequest, StoryContract, StoryState } from "./types.js";
 
-export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; storyId?: string; runId?: string; storyContractPath?: string; }
+export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; storyId?: string; runId?: string; storyContractPath?: string; instructionPath?: string; }
 
 function emitOperationalEvent(input: { source: "orchestrator" | "developer" | "reviewer" | "git" | "github" | "validation"; phase: string; message: string; level?: "INFO" | "WARN" | "ERROR"; command?: string; activity?: "RUNNING" | "WAITING_FOR_INPUT" | "WAITING_FOR_CHECKS"; outcome?: string }): void {
   console.log(JSON.stringify({ aiFactoryEvent: true, level: "INFO", activity: "RUNNING", ...input }));
@@ -31,6 +31,7 @@ export function parseArgs(args: string[]): CliOptions {
     else if (arg === "--story-id") options.storyId = args[++index];
     else if (arg === "--run-id") options.runId = args[++index];
     else if (arg === "--story-contract") options.storyContractPath = args[++index];
+    else if (arg === "--instruction-file") options.instructionPath = args[++index];
     else throw new Error(`unknown argument ${arg}`);
   }
   if (options.maxStories !== undefined && (!Number.isInteger(options.maxStories) || options.maxStories < 1)) throw new Error("--max-stories must be a positive integer");
@@ -38,8 +39,8 @@ export function parseArgs(args: string[]): CliOptions {
   return options;
 }
 
-function storyPrompt(issue: Issue, contract: StoryContract, feedback = ""): string {
-  return [`Implement GitHub Issue #${issue.number}: ${issue.title}`, `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Scope: ${contract.scope}`, `Validation: ${contract.validation.join("; ") || "use configured validation commands"}`, feedback ? `Feedback from the previous gate:\n${feedback}` : "", "Work only in the current worktree. Do not change controller policy, CI protections, or credentials. End with the required JSON result."].filter(Boolean).join("\n");
+function storyPrompt(issue: Issue, contract: StoryContract, feedback = "", instructions: string[] = []): string {
+  return [`Implement GitHub Issue #${issue.number}: ${issue.title}`, `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Scope: ${contract.scope}`, `Validation: ${contract.validation.join("; ") || "use configured validation commands"}`, feedback ? `Feedback from the previous gate:\n${feedback}` : "", instructions.length ? `Additional human instructions for this invocation:\n${instructions.map((item) => `- ${item}`).join("\n")}` : "", "Work only in the current worktree. Do not change controller policy, CI protections, or credentials. End with the required JSON result."].filter(Boolean).join("\n");
 }
 
 function reviewPrompt(issue: Issue, contract: StoryContract, diff: string, validationOutput: string): string {
@@ -54,7 +55,7 @@ async function mark(client: GitHubClient, issue: Issue, status: "agent:running" 
   await client.setIssueLabels(issue.number, replaceAgentLabel(issue.labels, status));
 }
 
-async function processStory(client: GitHubClient, config: OrchestrationConfig, target: { path: string; controlRoot: string; env?: NodeJS.ProcessEnv }, issue: Issue, contract: StoryContract, stateFile: string): Promise<StoryStatusResult> {
+async function processStory(client: GitHubClient, config: OrchestrationConfig, target: { path: string; controlRoot: string; env?: NodeJS.ProcessEnv }, issue: Issue, contract: StoryContract, stateFile: string, instructions: string[] = []): Promise<StoryStatusResult> {
   emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Preparing isolated worktree for issue #${issue.number}` });
   const state = await loadState(stateFile);
   const branch = `agent/issue-${issue.number}`;
@@ -74,8 +75,8 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       transition(state, issue.number, cycle === 0 ? "IMPLEMENTING" : "FIXING", { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined });
       await saveState(stateFile, state);
       try {
-        emitOperationalEvent({ source: "developer", phase: cycle === 0 ? "IMPLEMENTING" : "FIXING", message: `Developer agent started for issue #${issue.number}, cycle ${cycle}` });
-        await codex.developer(storyPrompt(issue, contract, feedback), worktree.path, config.timeouts.codexMinutes * 60_000);
+        emitOperationalEvent({ source: "developer", phase: cycle === 0 ? "IMPLEMENTING" : "FIXING", message: `Developer agent started for issue #${issue.number}, cycle ${cycle}${instructions.length ? ` with ${instructions.length} human instruction(s)` : ""}` });
+        await codex.developer(storyPrompt(issue, contract, feedback, instructions), worktree.path, config.timeouts.codexMinutes * 60_000);
       } catch (error) {
         const kind = error instanceof CodexRunError ? error.kind : "FAILED";
         const status = kind === "AUTH" ? "PAUSED_AUTH" : kind === "QUOTA" ? "PAUSED_QUOTA" : "FAILED_INFRA";
@@ -215,10 +216,11 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
   const issues = await client.listIssues();
   const completed = new Set(issues.filter((issue) => issue.labels.includes("agent:done")).map((issue) => issue.number));
   const explicitContract = options.storyContractPath ? loadExplicitContract(options.storyContractPath) : undefined;
+  const instructions = options.instructionPath ? loadInstructions(options.instructionPath) : [];
   for (let count = 0; count < effectiveConfig.maxStories; count += 1) {
     const selection = options.storyId ? selectExplicitStory(issues, completed, options.storyId, explicitContract) : selectNextStory(issues, completed);
     if (!selection) { console.log("No eligible agent:ready story found."); break; }
-    const result = await processStory(client, effectiveConfig, { ...target, controlRoot }, selection.issue, selection.contract, stateFile);
+    const result = await processStory(client, effectiveConfig, { ...target, controlRoot }, selection.issue, selection.contract, stateFile, instructions);
     emitOperationalEvent({ source: "orchestrator", phase: result.status === "PR_OPEN" || result.status === "DONE" ? "FINISHED" : "WAITING", message: `${result.status} #${selection.issue.number}${result.state.reason ? `: ${result.state.reason}` : ""}`, level: result.status === "FAILED_INFRA" ? "ERROR" : result.status === "PR_OPEN" || result.status === "DONE" ? "INFO" : "WARN", activity: result.status === "PR_OPEN" || result.status === "DONE" ? "RUNNING" : "WAITING_FOR_INPUT", outcome: result.status });
     console.log(`${result.status} #${selection.issue.number}${result.state.reason ? `: ${result.state.reason}` : ""}`);
     if (result.status === "DONE") completed.add(selection.issue.number); else break;
@@ -239,5 +241,7 @@ function loadExplicitContract(path: string): StoryContract {
   if (typeof value.objective !== "string" || !value.objective || !Array.isArray(value.acceptanceCriteria) || value.acceptanceCriteria.some((item) => typeof item !== "string") || typeof value.scope !== "string" || !Array.isArray(value.dependencies) || value.dependencies.some((item) => !Number.isInteger(item)) || !Number.isInteger(value.priority) || Number(value.priority) < 1 || !Array.isArray(value.validation) || value.validation.some((item) => typeof item !== "string")) throw new Error("invalid explicit story contract");
   return value as StoryContract;
 }
+
+function loadInstructions(path: string): string[] { const value = JSON.parse(readFileSync(resolve(path), "utf8")) as unknown; if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length > 10_000)) throw new Error("invalid instruction file"); return value; }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) runOrchestrator().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

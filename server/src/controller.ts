@@ -97,18 +97,23 @@ export class LocalController {
   async eventsSince(cursor = 0, runId?: string): Promise<LogEntry[]> { await this.ensureRuns(); const runs = runId ? this.runHistory.filter((run) => run.runId === runId) : this.runHistory; const events: LogEntry[] = []; for (const run of runs) events.push(...await this.persistence.readEvents(run.runId)); return events.filter((event) => event.sequence > cursor).sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.sequence - right.sequence); }
   async approvals(): Promise<ApprovalRequest[]> { return this.approvalItems; }
   async decideApproval(requestId: string, request: DecisionRequest): Promise<DecisionResult> {
-    const previous = this.decisions.get(request.idempotencyKey); if (previous) return previous;
     const approval = this.approvalItems.find((item) => item.requestId === requestId);
     if (!approval) throw new Error("APPROVAL_NOT_FOUND");
+    const previous = this.decisions.get(request.idempotencyKey); if (previous) return previous;
+    const durable = (await this.persistence.readDecisions<{ idempotencyKey?: string; result?: DecisionResult }>(approval.runId)).find((item) => item.idempotencyKey === request.idempotencyKey)?.result; if (durable) { this.decisions.set(request.idempotencyKey, durable); return durable; }
     if (approval.status !== "PENDING") throw new Error("APPROVAL_ALREADY_DECIDED");
     if (request.decision === "REJECT" && !request.reason?.trim()) throw new Error("rejection reason required");
     if ((approval.expectedHeadSha && approval.expectedHeadSha !== request.expectedHeadSha) || (approval.expectedSpecRevision && approval.expectedSpecRevision !== request.expectedSpecRevision)) throw new Error("STALE_APPROVAL");
-    if (approval.type === "MERGE" && request.decision === "APPROVE" && approval.evidence.some((item) => /(ci|check|test).*(fail|pending)|(fail|pending).*(ci|check|test)/i.test(item))) throw new Error("MERGE_CHECKS_NOT_PASSING");
+    if (approval.type === "MERGE" && request.decision === "APPROVE") {
+      await this.ensureRuns(); await this.ensureStories(); const run = this.runHistory.find((item) => item.runId === approval.runId); const story = this.stories.find((item) => item.storyId === approval.storyId);
+      if ((approval.expectedHeadSha && (run?.currentHeadSha || story?.headSha) && approval.expectedHeadSha !== (run?.currentHeadSha || story?.headSha)) || (approval.expectedSpecRevision && (run?.effectiveSpecRevision || story?.specRevision) && approval.expectedSpecRevision !== (run?.effectiveSpecRevision || story?.specRevision))) throw new Error("STALE_APPROVAL");
+      if (approval.evidence.some((item) => /(ci|check|test).*(fail|pending)|(fail|pending).*(ci|check|test)/i.test(item))) throw new Error("MERGE_CHECKS_NOT_PASSING");
+    }
     const now = new Date().toISOString();
-    if (request.decision === "DEFER") { approval.status = "DEFERRED"; approval.decidedAt = now; approval.reason = request.reason; const result: DecisionResult = { accepted: true, requestId, status: "DEFERRED", message: "Decision deferred; the run remains blocked.", executionStatus: "PENDING" }; this.decisions.set(request.idempotencyKey, result); await this.persistence.appendDecision(approval.runId, { schemaVersion: 1, requestId, action: "DEFER", actor: "local-user", createdAt: now }); return result; }
+    if (request.decision === "DEFER") { approval.status = "DEFERRED"; approval.decidedAt = now; approval.reason = request.reason; const result: DecisionResult = { accepted: true, requestId, status: "DEFERRED", message: "Decision deferred; the run remains blocked.", executionStatus: "PENDING" }; this.decisions.set(request.idempotencyKey, result); await this.persistence.appendDecision(approval.runId, { schemaVersion: 1, requestId, action: "DEFER", actor: "local-user", idempotencyKey: request.idempotencyKey, result, createdAt: now }); return result; }
     approval.status = request.decision === "APPROVE" ? "APPROVED" : "REJECTED"; approval.decidedAt = now; approval.reason = request.reason;
     const result: DecisionResult = { accepted: true, decisionId: randomUUID(), requestId, status: approval.status, message: request.decision === "APPROVE" ? (approval.type === "MERGE" ? "Approval recorded; GitHub checks and native review still apply." : "Approval recorded; the controller may continue at the next safe point.") : "Rejection recorded; the run remains blocked.", executionStatus: "PENDING" };
-    this.decisions.set(request.idempotencyKey, result); await this.persistence.appendDecision(approval.runId, { schemaVersion: 1, decisionId: result.decisionId, requestId, decision: request.decision, actor: "local-user", reason: request.reason, expectedHeadSha: request.expectedHeadSha, expectedSpecRevision: request.expectedSpecRevision, createdAt: now, executionStatus: "PENDING" }); return result;
+    this.decisions.set(request.idempotencyKey, result); await this.persistence.appendDecision(approval.runId, { schemaVersion: 1, decisionId: result.decisionId, requestId, decision: request.decision, actor: "local-user", reason: request.reason, expectedHeadSha: request.expectedHeadSha, expectedSpecRevision: request.expectedSpecRevision, idempotencyKey: request.idempotencyKey, result, createdAt: now, executionStatus: "PENDING" }); return result;
   }
   async addInstruction(runId: string, request: InstructionRequest): Promise<InstructionResult> {
     const previous = this.instructions.get(request.idempotencyKey); if (previous) return previous;
@@ -125,7 +130,7 @@ export class LocalController {
     const diff = unifiedDiff(story.markdown, request.markdown);
     if (!request.confirm) return { preview: true, diff };
     const root = resolve(this.options.backlogRoot || "backlog"); const path = resolve(root, story.sourceFile || `${storyId}.md`); if (dirname(path) !== root) throw new Error("PERMISSION_DENIED");
-    await writeFile(path, request.markdown, "utf8"); const revision = createHash("sha256").update(request.markdown).digest("hex").slice(0, 12); this.stories = this.stories.map((item) => item.storyId === storyId ? { ...item, markdown: request.markdown, specRevision: revision, updatedAt: new Date().toISOString() } : item); return { preview: false, diff, revision };
+    await writeFile(path, request.markdown, "utf8"); const revision = createHash("sha256").update(request.markdown).digest("hex").slice(0, 12); this.stories = this.stories.map((item) => item.storyId === storyId ? { ...item, markdown: request.markdown, specRevision: revision, validationStatus: "STALE", validatedHeadSha: undefined, updatedAt: new Date().toISOString() } : item); return { preview: false, diff, revision };
   }
   async updateConfig(request: ConfigUpdateRequest): Promise<{ revision: string; config: AppConfigView; diff: string }> {
     const previous = this.configUpdates.get(request.idempotencyKey); if (previous) return previous;
@@ -170,8 +175,7 @@ export class LocalController {
     catch (error) { this.startPending = false; throw error; }
     if (!this.options.executionService) { this.activeRun = { ...this.activeRun!, status: "ACTIVE", updatedAt: new Date().toISOString() }; if (story) this.markStoryActive(story, now); await this.persist("run started"); this.startPending = false; return this.activeRun; }
     try {
-      const project = this.activeProject!; const stateRoot = this.options.projectStore!.projectDataRoot(project.projectId); const runId = this.activeRun!.runId; const handle = await this.options.executionService.start({ runId, story: story!, project, controlRoot: this.options.projectStore!.controlRoot, stateRoot, configRevision: this.configRevision, config: { ...this.config }, onEvent: (event) => { void this.recordProcessEvent(runId, event); } });
-      this.executionHandles.set(this.activeRun.runId, handle); this.activeRun = { ...this.activeRun, status: "ACTIVE", phase: "IMPLEMENTING", activity: "RUNNING", processId: handle.pid, attempts: 1, updatedAt: new Date().toISOString() }; this.markStoryActive(story!, this.activeRun.updatedAt); await this.persist("orchestrator process spawned"); void handle.completion.then((outcome) => this.completeExecution(runId, outcome)); return this.activeRun;
+      return await this.spawnExecution(story!);
     } catch (error) {
       if (error instanceof Error && error.message === "RUN_ALREADY_ACTIVE_FOR_PROJECT") { this.activeRun = undefined; throw error; }
       this.activeRun = { ...this.activeRun, status: "FAILED", phase: "FINISHED", resultSummary: sanitizeText(error instanceof Error ? error.message : String(error)), updatedAt: new Date().toISOString() }; await this.persist("orchestrator failed to spawn"); const failed = this.activeRun; this.activeRun = undefined; return failed;
@@ -183,7 +187,19 @@ export class LocalController {
     if (!this.activeRun || this.activeRun.runId !== runId) throw new Error("RUN_NOT_FOUND");
     if (action === "pause" && this.activeRun.status === "ACTIVE") this.activeRun = { ...this.activeRun, status: "PAUSE_REQUESTED", pauseRequested: true, updatedAt: new Date().toISOString() };
     else if (action === "stop" && !["FINISHED", "STOPPED"].includes(this.activeRun.status)) this.activeRun = { ...this.activeRun, status: "STOP_REQUESTED", stopRequested: true, phase: "STOPPED", updatedAt: new Date().toISOString() };
-    else if (action === "resume" && ["PAUSED", "STOPPED", "INTERRUPTED", "STOP_REQUESTED", "PAUSE_REQUESTED"].includes(this.activeRun.status)) this.activeRun = { ...this.activeRun, status: "ACTIVE", phase: "SELECTING", pauseRequested: false, stopRequested: false, updatedAt: new Date().toISOString() };
+    else if (action === "resume" && ["PAUSED", "STOPPED", "INTERRUPTED", "STOP_REQUESTED", "PAUSE_REQUESTED", "BLOCKED"].includes(this.activeRun.status)) {
+      if (this.options.executionService && !this.executionHandles.has(runId)) {
+        await this.ensureStories();
+        const story = this.stories.find((item) => item.storyId === this.activeRun?.storyId); if (!story) throw new Error("STORY_NOT_FOUND");
+        const pending = (await this.persistence.readInstructions<{ instructionId: string; content?: string; status: string }>(runId)).filter((item) => item.status === "PENDING_NEXT_INVOCATION" && item.content);
+        this.activeRun = { ...this.activeRun, status: "IDLE", phase: "SELECTING", activity: "IDLE", pauseRequested: false, stopRequested: false, updatedAt: new Date().toISOString() }; await this.persist("resume accepted; starting next invocation");
+        const resumed = await this.spawnExecution(story, pending.map((item) => item.content!));
+        for (const item of pending) await this.persistence.appendInstruction(runId, { schemaVersion: 1, instructionId: item.instructionId, status: "APPLIED", appliedAt: new Date().toISOString(), invocation: resumed.attempts });
+        if (pending.length) await this.persist(`${pending.length} queued instruction(s) applied to invocation ${resumed.attempts}`);
+        return resumed;
+      }
+      this.activeRun = { ...this.activeRun, status: "ACTIVE", phase: "SELECTING", pauseRequested: false, stopRequested: false, updatedAt: new Date().toISOString() };
+    }
     await this.persist(`run ${action} requested`);
     return this.activeRun;
   }
@@ -192,6 +208,12 @@ export class LocalController {
     const snapshot = { ...this.activeRun };
     this.runHistory = [snapshot, ...this.runHistory.filter((run) => run.runId !== snapshot.runId)];
     await this.enqueueEvent(snapshot.runId, snapshot, { source: "controller", phase: snapshot.phase, level: "INFO", message });
+  }
+
+  private async spawnExecution(story: StoryDetail, instructions: string[] = []): Promise<RunSnapshot> {
+    const project = this.activeProject!; const stateRoot = this.options.projectStore!.projectDataRoot(project.projectId); const runId = this.activeRun!.runId;
+    const handle = await this.options.executionService!.start({ runId, story, project, controlRoot: this.options.projectStore!.controlRoot, stateRoot, configRevision: this.configRevision, config: { ...this.config }, instructions, onEvent: (event) => { void this.recordProcessEvent(runId, event); } });
+    this.executionHandles.set(runId, handle); this.activeRun = { ...this.activeRun!, status: "ACTIVE", phase: "IMPLEMENTING", activity: "RUNNING", processId: handle.pid, attempts: this.activeRun!.attempts + 1, updatedAt: new Date().toISOString() }; this.markStoryActive(story, this.activeRun.updatedAt); await this.persist("orchestrator process spawned"); void handle.completion.then((outcome) => this.completeExecution(runId, outcome)); return this.activeRun;
   }
 
   private async recordProcessEvent(runId: string, processEvent: ExecutionProcessEvent): Promise<void> {
@@ -226,7 +248,7 @@ export class LocalController {
   private applySyncActions(preview: BacklogSyncPreview): void { this.stories = this.stories.map((story) => { const action = preview.actions.find((item) => item.storyId === story.storyId); return action ? { ...story, githubIssueNumber: action.issueNumber || story.githubIssueNumber, syncStatus: action.kind === "CONFLICT" ? "CONFLICT" : action.kind === "UNCHANGED" ? "IN_SYNC" : "LOCAL_ONLY", conflict: action.kind === "CONFLICT" ? { repositoryRevision: action.localRevision, githubRevision: action.remoteRevision || "unknown", summary: action.reason || "Local and GitHub content diverged." } : undefined } : story; }); }
   private selectRunnableStory(mode: "selected" | "auto", storyId?: string): StoryDetail | undefined { const runnable = (story: StoryDetail) => story.valid !== false && story.deliveryStatus !== "MERGED" && story.executionStatus === "IDLE" && !story.blockedReason && !story.dependencyError && story.dependencies.every((dependency) => this.stories.find((item) => item.storyId === dependency)?.deliveryStatus === "MERGED"); if (mode === "selected") { const selected = this.stories.find((item) => item.storyId === storyId); if (!selected) throw new Error("STORY_NOT_FOUND"); if (!runnable(selected)) throw new Error(`STORY_NOT_RUNNABLE: ${selected.dependencyError || selected.blockedReason || "dependencies are not merged or the story is already active/completed"}`); return selected; } return [...this.stories].filter(runnable).sort((left, right) => left.priority - right.priority || left.storyId.localeCompare(right.storyId, "en") || (left.sourceFile || "").localeCompare(right.sourceFile || "", "en"))[0]; }
   private markStoryActive(story: StoryDetail, updatedAt: string): void { this.stories = this.stories.map((item) => item.storyId === story.storyId ? { ...item, executionStatus: "ACTIVE", deliveryStatus: "IMPLEMENTING", branch: story.githubIssueNumber ? `agent/issue-${story.githubIssueNumber}` : item.branch, updatedAt } : item); }
-  private async completeExecution(runId: string, outcome: ExecutionOutcome): Promise<void> { await this.eventQueues.get(runId); const run = this.runHistory.find((item) => item.runId === runId); if (!run) return; const finished = { ...run, status: outcome.status, phase: "FINISHED" as const, activity: "IDLE" as const, resultSummary: sanitizeText(outcome.summary), updatedAt: new Date().toISOString() }; this.activeRun = finished; this.runHistory = [finished, ...this.runHistory.filter((item) => item.runId !== runId)]; this.stories = this.stories.map((story) => story.storyId === run.storyId ? { ...story, executionStatus: outcome.status === "BLOCKED" ? "BLOCKED" : "FINISHED", deliveryStatus: outcome.status === "SUCCEEDED" ? "PR_OPEN" : story.deliveryStatus, blockedReason: outcome.status === "BLOCKED" || outcome.status === "FAILED" ? finished.resultSummary : story.blockedReason, updatedAt: finished.updatedAt } : story); await this.persist(`orchestrator ${outcome.status.toLowerCase()}: ${finished.resultSummary}`); this.executionHandles.delete(runId); if (this.activeRun?.runId === runId) this.activeRun = undefined; }
+  private async completeExecution(runId: string, outcome: ExecutionOutcome): Promise<void> { await this.eventQueues.get(runId); const run = this.runHistory.find((item) => item.runId === runId); if (!run) return; const finished = { ...run, status: outcome.status, phase: "FINISHED" as const, activity: "IDLE" as const, resultSummary: sanitizeText(outcome.summary), updatedAt: new Date().toISOString() }; this.activeRun = finished; this.runHistory = [finished, ...this.runHistory.filter((item) => item.runId !== runId)]; this.executionHandles.delete(runId); this.stories = this.stories.map((story) => story.storyId === run.storyId ? { ...story, executionStatus: outcome.status === "BLOCKED" ? "BLOCKED" : "FINISHED", deliveryStatus: outcome.status === "SUCCEEDED" ? "PR_OPEN" : story.deliveryStatus, blockedReason: outcome.status === "BLOCKED" || outcome.status === "FAILED" ? finished.resultSummary : story.blockedReason, updatedAt: finished.updatedAt } : story); await this.persist(`orchestrator ${outcome.status.toLowerCase()}: ${finished.resultSummary}`); if (this.activeRun?.runId === runId && this.activeRun.status === outcome.status) this.activeRun = undefined; }
   private async refreshOrchestratorState(): Promise<void> {
     if (!this.options.orchestratorStatePath) return;
     let parsed: OrchestratorState;

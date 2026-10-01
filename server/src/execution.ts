@@ -12,6 +12,7 @@ export interface ExecutionContext {
   stateRoot: string;
   configRevision: string;
   config: AppConfigView;
+  instructions?: string[];
   onEvent?: (event: ExecutionProcessEvent) => void;
 }
 export interface ExecutionProcessEvent {
@@ -40,6 +41,7 @@ export class ChildProcessExecutionService implements ExecutionService {
     await mkdir(context.stateRoot, { recursive: true });
     const configPath = join(context.stateRoot, `run-${context.runId}.config.json`);
     const storyContractPath = join(context.stateRoot, `run-${context.runId}.story.json`);
+    const instructionPath = join(context.stateRoot, `run-${context.runId}.instructions.json`);
     const config = {
       targetRepository: `${context.project.github.owner}/${context.project.github.repo}`,
       targetBranch: context.project.baseBranch || context.project.currentBranch || "main",
@@ -59,7 +61,8 @@ export class ChildProcessExecutionService implements ExecutionService {
     const temp = `${configPath}.${process.pid}.tmp`; await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, "utf8"); await rename(temp, configPath);
     const storyContract = { objective: context.story.objective, acceptanceCriteria: context.story.acceptanceCriteria, scope: context.story.scope, dependencies: [], priority: context.story.priority, validation: context.story.validation };
     const storyTemp = `${storyContractPath}.${process.pid}.tmp`; await writeFile(storyTemp, `${JSON.stringify(storyContract, null, 2)}\n`, "utf8"); await rename(storyTemp, storyContractPath);
-    const args = [script, "--config", configPath, "--max-stories", "1", "--story-id", context.story.storyId, "--story-contract", storyContractPath, "--run-id", context.runId];
+    const instructionTemp = `${instructionPath}.${process.pid}.tmp`; await writeFile(instructionTemp, `${JSON.stringify(context.instructions || [], null, 2)}\n`, "utf8"); await rename(instructionTemp, instructionPath);
+    const args = [script, "--config", configPath, "--max-stories", "1", "--story-id", context.story.storyId, "--story-contract", storyContractPath, "--instruction-file", instructionPath, "--run-id", context.runId];
     const child = spawn(process.execPath, args, { cwd: context.controlRoot, env: process.env, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     this.activeProjects.set(context.project.projectId, context.runId);
     let stdout = ""; let stderr = ""; let stdoutBuffer = ""; let stderrBuffer = ""; let terminalOutcome: string | undefined; let timedOut = false;

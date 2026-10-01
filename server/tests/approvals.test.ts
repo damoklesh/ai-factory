@@ -11,10 +11,11 @@ const approval = (type: ApprovalRequest["type"], evidence = ["reviewer evidence:
 
 test("approves, rejects with a reason, defers and applies idempotency", async () => {
   const root = await mkdtemp(join(tmpdir(), "ai-factory-approvals-"));
-  const controller = new LocalController(new AgentPersistence(root), { approvals: [approval("CLARIFICATION"), approval("SCOPE_CHANGE")] });
+  const persistence = new AgentPersistence(root); const controller = new LocalController(persistence, { approvals: [approval("CLARIFICATION"), approval("SCOPE_CHANGE")] });
   const approved = await controller.decideApproval("CLARIFICATION-1", { decision: "APPROVE", expectedHeadSha: "sha-current", expectedSpecRevision: "spec-current", idempotencyKey: "same" });
   assert.equal(approved.status, "APPROVED");
   assert.deepEqual(await controller.decideApproval("CLARIFICATION-1", { decision: "APPROVE", expectedHeadSha: "sha-current", expectedSpecRevision: "spec-current", idempotencyKey: "same" }), approved);
+  const restarted = new LocalController(persistence, { approvals: [approval("CLARIFICATION")] }); assert.deepEqual(await restarted.decideApproval("CLARIFICATION-1", { decision: "APPROVE", expectedHeadSha: "sha-current", expectedSpecRevision: "spec-current", idempotencyKey: "same" }), approved);
   await assert.rejects(() => controller.decideApproval("SCOPE_CHANGE-1", { decision: "REJECT", expectedHeadSha: "sha-current", expectedSpecRevision: "spec-current", idempotencyKey: "reject" }), /reason/);
   const rejected = await controller.decideApproval("SCOPE_CHANGE-1", { decision: "REJECT", reason: "Need product confirmation", expectedHeadSha: "sha-current", expectedSpecRevision: "spec-current", idempotencyKey: "reject" });
   assert.equal(rejected.status, "REJECTED");
