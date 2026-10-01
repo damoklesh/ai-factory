@@ -57,6 +57,25 @@ test("surfaces GitHub API errors without exposing the token", async () => {
   }
 });
 
+test("falls back to an auditable PR conversation comment when native review is rejected", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input); calls.push(`${init?.method || "GET"} ${url}`);
+    if (url.endsWith("/pulls/35/reviews")) return new Response("review author is not allowed", { status: 422, statusText: "Unprocessable Entity" });
+    if (url.endsWith("/issues/35/comments")) return Response.json({ html_url: "https://github.com/owner/repo/pull/35#issuecomment-1" });
+    return new Response(null, { status: 204 });
+  };
+  try {
+    const client = new RestGitHubClient("owner", "repo", "secret");
+    const result = await client.publishPullRequestReview(35, { body: "Changes requested", changesRequested: true, idempotencyKey: "run:cycle:sha" });
+    assert.equal(result.url, "https://github.com/owner/repo/pull/35#issuecomment-1");
+    assert.deepEqual(calls, ["POST https://api.github.com/repos/owner/repo/pulls/35/reviews", "POST https://api.github.com/repos/owner/repo/issues/35/comments"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("uses the latest Actions attempt and accepts GitHub display names", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {

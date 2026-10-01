@@ -85,10 +85,10 @@ export class ChildProcessExecutionService implements ExecutionService {
       if (timedOut) resolve({ status: "FAILED", summary: `Orchestrator timed out after ${this.timeoutMs}ms`, exitCode: code });
       else if (cancelRequested) resolve({ status: "CANCELLED", summary: "Orchestrator cancelled by user", exitCode: code });
       else if (signal) resolve({ status: "CANCELLED", summary: `Orchestrator stopped by ${signal}`, exitCode: code });
-      else if (code !== 0) resolve({ status: "FAILED", summary: lastMessage(stderr) || lastMessage(stdout) || `Orchestrator exited with ${code}`, exitCode: code });
-      else if (/NEEDS_HUMAN|PAUSED_AUTH|PAUSED_QUOTA/i.test(terminalOutcome || "")) resolve({ status: "BLOCKED", summary: lastMessage(stdout) || terminalOutcome || "Orchestrator needs input.", exitCode: code });
-      else if (/FAILED/i.test(terminalOutcome || "")) resolve({ status: "FAILED", summary: lastMessage(stderr) || lastMessage(stdout) || terminalOutcome || "Orchestrator failed.", exitCode: code });
-      else resolve({ status: "SUCCEEDED", summary: lastMessage(stdout) || "Orchestrator completed successfully.", exitCode: code });
+      else if (code !== 0) resolve({ status: "FAILED", summary: lastMessage(stdout) || meaningfulStderr(stderr) || terminalOutcome || `Orchestrator exited with ${code}`, exitCode: code });
+      else if (/NEEDS_HUMAN|PAUSED_AUTH|PAUSED_QUOTA/i.test(terminalOutcome || "")) resolve({ status: "BLOCKED", summary: lastMessage(stdout) || terminalOutcome || meaningfulStderr(stderr) || "Orchestrator needs input.", exitCode: code });
+      else if (/FAILED/i.test(terminalOutcome || "")) resolve({ status: "FAILED", summary: lastMessage(stdout) || terminalOutcome || meaningfulStderr(stderr) || "Orchestrator failed.", exitCode: code });
+      else resolve({ status: "SUCCEEDED", summary: lastMessage(stdout) || meaningfulStderr(stderr) || "Orchestrator completed successfully.", exitCode: code });
     }));
     await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", (error) => { this.activeProjects.delete(context.project.projectId); reject(error); }); });
     return { pid: child.pid, completion, cancel: async () => { cancelRequested = true; await terminateProcessTree(child.pid); } };
@@ -103,6 +103,7 @@ async function terminateProcessTree(pid: number | undefined): Promise<void> {
 
 function bounded(current: string, chunk: string): string { const value = `${current}${chunk}`; return value.length > 1_000_000 ? value.slice(-1_000_000) : value; }
 function lastMessage(value: string): string { return value.trim().split(/\r?\n/).filter(Boolean).at(-1) || ""; }
+function meaningfulStderr(value: string): string { return value.trim().split(/\r?\n/).filter(Boolean).filter((line) => !/^\(node:\d+\) \[DEP\d+\] DeprecationWarning:/.test(line) && !/^\(Use `node --trace-deprecation/.test(line)).at(-1) || ""; }
 function normalizeProcessLine(line: string, stream: "stdout" | "stderr"): ExecutionProcessEvent {
   const safe = sanitizeText(line).slice(0, 32_000);
   try {

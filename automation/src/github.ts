@@ -114,8 +114,19 @@ export class RestGitHubClient implements GitHubClient {
     return { number: item.number, title: item.title, body: item.body || "", state: item.state, merged: Boolean(item.merged_at), headBranch: item.head.ref, headSha: item.head.sha, baseBranch: item.base.ref };
   }
   async publishPullRequestReview(number: number, input: { body: string; changesRequested: boolean; idempotencyKey: string }): Promise<{ url?: string }> {
-    const item = await this.request<{ html_url?: string }>(this.path(`/pulls/${number}/reviews`), { method: "POST", body: JSON.stringify({ body: `[ai-factory-review:${input.idempotencyKey}]\n\n${input.body}`, event: input.changesRequested ? "REQUEST_CHANGES" : "COMMENT" }) });
-    return { url: item.html_url };
+    const body = `[ai-factory-review:${input.idempotencyKey}]\n\n${input.body}`;
+    try {
+      const item = await this.request<{ html_url?: string }>(this.path(`/pulls/${number}/reviews`), { method: "POST", body: JSON.stringify({ body, event: input.changesRequested ? "REQUEST_CHANGES" : "COMMENT" }) });
+      return { url: item.html_url };
+    } catch (error) {
+      // GitHub rejects native approval/request-changes reviews from the PR
+      // author. Preserve the review evidence in the PR conversation so the
+      // workflow can continue with the internal decision and the human still
+      // has an auditable reviewer result.
+      if (!(error instanceof Error) || !/^GitHub API 422\b/.test(error.message)) throw error;
+      const item = await this.request<{ html_url?: string }>(this.path(`/issues/${number}/comments`), { method: "POST", body: JSON.stringify({ body: `[AI Factory reviewer comment; native review unavailable]\n\n${body}` }) });
+      return { url: item.html_url };
+    }
   }
   async getReviewThreads(number: number, headSha: string): Promise<{ available: boolean; threads: ReviewThread[]; reason?: string }> {
     const comments = await this.request<Array<{ id: number; body?: string; path?: string; line?: number | null; commit_id?: string; resolved?: boolean; blocking?: boolean }>>(this.path(`/pulls/${number}/comments`));
