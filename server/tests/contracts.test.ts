@@ -15,9 +15,11 @@ test("shared contracts validate run, decision, and instruction inputs", () => {
 });
 
 test("validates separate developer and reviewer model settings", () => {
-  const parsed = parseConfigUpdateRequest({ config: { developerModel: "terra", developerReasoning: "xhigh", reviewerModel: "luna", reviewerReasoning: "low" }, expectedRevision: "r1", idempotencyKey: "models-1" });
+  const parsed = parseConfigUpdateRequest({ config: { modelVersion: "gpt-5.6", developerModel: "terra", developerReasoning: "xhigh", reviewerModel: "luna", reviewerReasoning: "low" }, expectedRevision: "r1", idempotencyKey: "models-1" });
+  assert.equal(parsed.config.modelVersion, "gpt-5.6");
   assert.equal(parsed.config.developerModel, "terra");
   assert.equal(parsed.config.developerReasoning, "xhigh");
   assert.throws(() => parseConfigUpdateRequest({ config: { reviewerModel: "mars" }, expectedRevision: "r1", idempotencyKey: "models-2" }), /luna, sol, or terra/);
   assert.throws(() => parseConfigUpdateRequest({ config: { developerReasoning: "extreme" }, expectedRevision: "r1", idempotencyKey: "models-3" }), /low, medium, high, or xhigh/);
+  assert.throws(() => parseConfigUpdateRequest({ config: { modelVersion: "5.6" }, expectedRevision: "r1", idempotencyKey: "models-4" }), /gpt-X.Y/);
 });

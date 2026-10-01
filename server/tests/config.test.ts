@@ -12,8 +12,9 @@ test("saves validated config atomically and preserves active run snapshot", asyn
   const controller = new LocalController(new AgentPersistence(join(root, ".agent")), { configPath });
   const before = await controller.configView();
   const run = await controller.start({ maxStories: 1, autoMerge: false });
-  const saved = await controller.updateConfig({ config: { developerModel: "terra", developerReasoning: "high", reviewerModel: "luna", reviewerReasoning: "low", maxFixCycles: 5, validationCommands: ["npm test"] }, expectedRevision: before.revision, idempotencyKey: "config-1" });
+  const saved = await controller.updateConfig({ config: { modelVersion: "gpt-5.6", developerModel: "terra", developerReasoning: "high", reviewerModel: "luna", reviewerReasoning: "low", maxFixCycles: 5, validationCommands: ["npm test"] }, expectedRevision: before.revision, idempotencyKey: "config-1" });
   assert.equal(saved.config.developerModel, "terra");
+  assert.equal(saved.config.modelVersion, "gpt-5.6");
   assert.equal(saved.config.reviewerReasoning, "low");
   assert.match(await readFile(configPath, "utf8"), /"developerModel": "terra"/);
   assert.equal((await controller.run(run.runId))?.effectiveConfigRevision, before.revision);

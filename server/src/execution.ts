@@ -49,6 +49,7 @@ export class ChildProcessExecutionService implements ExecutionService {
       targetBranch: context.project.baseBranch || context.project.currentBranch || "main",
       targetBacklogPath: "backlog",
       targetWorkspace: context.project.targetPath,
+      modelVersion: context.config.modelVersion,
       developerModel: context.config.developerModel,
       developerReasoning: context.config.developerReasoning,
       reviewerModel: context.config.reviewerModel,

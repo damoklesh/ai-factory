@@ -5,7 +5,7 @@
   "targetBacklogPath": "backlog",
   "targetWorkspace": "../workspaces/TARGET-REPOSITORY",
   "runnerLabel": "ai-local",
-  "model": "",
+  "modelVersion": "gpt-5.6",
   "developerModel": "luna",
   "developerReasoning": "xhigh",
   "reviewerModel": "terra",

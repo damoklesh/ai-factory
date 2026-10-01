@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { loadConfig } from "./config.js";
+import { loadConfig, resolveModelId } from "./config.js";
 import { CodexRunError, CodexRunner } from "./codex.js";
 import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubClient } from "./github.js";
 import { commitAndPush, createWorktree, gitDiff, gitRoot, removeWorktree, ensureTargetRepository, type Worktree } from "./git.js";
@@ -78,7 +78,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   await mark(client, issue, "agent:running");
   try {
     worktree = await createWorktree(root, config.targetBranch, branch, { env: target.env });
-    const codex = new CodexRunner(target.controlRoot, { model: config.developerModel, reasoning: config.developerReasoning }, { model: config.reviewerModel, reasoning: config.reviewerReasoning });
+    const codex = new CodexRunner(target.controlRoot, { model: resolveModelId(config.modelVersion, config.developerModel), reasoning: config.developerReasoning }, { model: resolveModelId(config.modelVersion, config.reviewerModel), reasoning: config.reviewerReasoning });
     while (cycle <= config.maxFixCycles) {
       const attemptId = `${config.runId || "cli"}:${issue.number}:${cycle === 0 && !pullRequest && implementationAttempt === 0 ? "implement" : "fix"}-${cycle}-${implementationAttempt}`;
       implementationAttempt += 1;
@@ -254,6 +254,7 @@ export async function runOrchestrator(args: string[] = process.argv.slice(2)): P
     console.log(`Control repository: ${config.controlRepository || "current checkout"}`);
     console.log(`Target repository: ${config.targetRepository}`);
     console.log(`Target branch: ${config.targetBranch}; max stories: ${options.maxStories ?? config.maxStories}; autoMerge: ${options.autoMerge ?? config.autoMerge}; story: ${options.storyId || "auto"}; run: ${options.runId || "cli"}`);
+    console.log(`Developer model: ${resolveModelId(config.modelVersion, config.developerModel)} (${config.developerReasoning}); reviewer model: ${resolveModelId(config.modelVersion, config.reviewerModel)} (${config.reviewerReasoning})`);
     console.log(`Validation commands: ${config.validationCommands.length}; required checks: ${config.requiredChecks.length}`);
     if (options.syncBacklog) console.log(`Backlog sync: ${config.targetBacklogPath}`);
     return 0;

@@ -127,8 +127,9 @@ Copy-Item config.example.json config.json
 | `targetWorkspace` | Local checkout path, relative to the `ai-factory` repository root or absolute | `../workspaces/TARGET-REPOSITORY` |
 | `owner`, `repo`, `baseBranch` | Legacy aliases for the target repository and branch | supported for migration |
 | `runnerLabel` | Intended runner label | `ai-local`; currently also set in the workflow |
-| `model` | Optional Codex model override | empty |
-| `developerModel` / `reviewerModel` | Codex model selection per agent | `luna`, `sol`, or `terra` |
+| `modelVersion` | Base GPT model version used to build the full Codex model IDs | `gpt-5.6` |
+| `model` | Legacy/global model fallback; use a full ID when retained | `gpt-5.6-sol` |
+| `developerModel` / `reviewerModel` | Model family selected per agent; resolved to `gpt-<version>-<family>` before invoking Codex | `luna`, `sol`, or `terra` |
 | `developerReasoning` / `reviewerReasoning` | Reasoning effort per agent | Developer `xhigh`; Reviewer `high` (also supports `low`/`medium`) |
 | `validationCommands` | Commands repeated by the controller in the worktree | project-specific, e.g. `npm test` |
 | `smokeCommands` | Project smoke commands | run after deterministic validation succeeds, with the same workflow timeout |

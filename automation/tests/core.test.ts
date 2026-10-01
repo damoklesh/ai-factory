@@ -84,7 +84,7 @@ test("executes Codex with schema output and classifies auth/quota failures", asy
 
 test("passes role-specific model and reasoning settings to Codex", async () => {
   const calls: string[][] = [];
-  const runner = new CodexRunner(process.cwd(), { model: "luna", reasoning: "xhigh" }, { model: "terra", reasoning: "high" }, async (_command, args) => {
+  const runner = new CodexRunner(process.cwd(), { model: "gpt-5.6-luna", reasoning: "xhigh" }, { model: "gpt-5.6-terra", reasoning: "high" }, async (_command, args) => {
     calls.push(args);
     const path = args[args.indexOf("-o") + 1];
     await writeFile(path, args.some((arg) => arg.includes("developer-result.json")) ? JSON.stringify({ summary: "ok", tests: [], risks: [] }) : JSON.stringify({ decision: "PASS", findings: [], evidence: [] }));
@@ -92,8 +92,8 @@ test("passes role-specific model and reasoning settings to Codex", async () => {
   });
   await runner.developer("implement", process.cwd(), 1000);
   await runner.reviewer("review", process.cwd(), 1000);
-  assert.ok(calls[0].includes("--model") && calls[0].includes("luna") && calls[0].includes("model_reasoning_effort=xhigh"));
-  assert.ok(calls[1].includes("--model") && calls[1].includes("terra") && calls[1].includes("model_reasoning_effort=high"));
+  assert.ok(calls[0].includes("--model") && calls[0].includes("gpt-5.6-luna") && calls[0].includes("model_reasoning_effort=xhigh"));
+  assert.ok(calls[1].includes("--model") && calls[1].includes("gpt-5.6-terra") && calls[1].includes("model_reasoning_effort=high"));
 });
 
 test("runs deterministic validation commands and reports failures", async () => {
