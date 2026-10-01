@@ -27,3 +27,21 @@ test("rejects stale approvals and merge approvals with failed checks", async () 
   await assert.rejects(() => controller.decideApproval("MERGE-1", { decision: "APPROVE", expectedHeadSha: "sha-old", expectedSpecRevision: "spec-current", idempotencyKey: "stale" }), /STALE_APPROVAL/);
   await assert.rejects(() => controller.decideApproval("MERGE-1", { decision: "APPROVE", expectedHeadSha: "sha-current", expectedSpecRevision: "spec-current", idempotencyKey: "failed-ci" }), /MERGE_CHECKS_NOT_PASSING/);
 });
+
+test("merge approval records a decision without invoking a merge operation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-merge-approval-"));
+  let mergeCalls = 0;
+  const controller = new LocalController(new AgentPersistence(root), {
+    approvals: [approval("MERGE")],
+    githubAdapter: { async observe() { return []; } },
+  });
+  const decision = await controller.decideApproval("MERGE-1", { decision: "APPROVE", expectedHeadSha: "sha-current", expectedSpecRevision: "spec-current", idempotencyKey: "merge-approval" });
+  assert.equal(decision.status, "APPROVED");
+  assert.equal(decision.executionStatus, "PENDING");
+  assert.equal(mergeCalls, 0);
+  assert.match(decision.message, /does not|checks|approval/i);
+  const restarted = new LocalController(new AgentPersistence(root), { approvals: [approval("MERGE")] });
+  const replayed = await restarted.decideApproval("MERGE-1", { decision: "APPROVE", expectedHeadSha: "sha-current", expectedSpecRevision: "spec-current", idempotencyKey: "merge-approval" });
+  assert.deepEqual(replayed, decision);
+  assert.equal((await restarted.approvals()).find((item) => item.requestId === "MERGE-1")?.status, "PENDING");
+});
