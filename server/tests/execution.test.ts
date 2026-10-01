@@ -19,15 +19,15 @@ class FakeExecution implements ExecutionService {
   contexts: ExecutionContext[] = [];
   private resolvers: Array<(outcome: ExecutionOutcome) => void> = [];
   constructor(private readonly failure?: Error) {}
-  async start(context: ExecutionContext): Promise<ExecutionHandle> { if (this.failure) throw this.failure; this.contexts.push(context); const completion = new Promise<ExecutionOutcome>((resolve) => this.resolvers.push(resolve)); return { pid: 4321, completion }; }
+  async start(context: ExecutionContext): Promise<ExecutionHandle> { if (this.failure) throw this.failure; this.contexts.push(context); const completion = new Promise<ExecutionOutcome>((resolve) => this.resolvers.push(resolve)); return { pid: 4321, completion, cancel: async () => this.finish(this.resolvers.length - 1, { status: "CANCELLED", summary: "cancelled by test", exitCode: null }) }; }
   finish(index: number, outcome: ExecutionOutcome): void { this.resolvers[index](outcome); }
 }
 
-async function fixture(execution: ExecutionService, githubAdapter?: GithubSyncAdapter): Promise<{ controller: LocalController; target: string; control: string }> {
+async function fixture(execution: ExecutionService, githubAdapter?: GithubSyncAdapter): Promise<{ controller: LocalController; target: string; control: string; persistenceRoot: string }> {
   const root = await mkdtemp(join(tmpdir(), "ai-factory-execution-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
   await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
   await writeFile(join(backlog, "US-001.md"), story("US-001", 1, "none", "MERGED", 1)); await writeFile(join(backlog, "US-002.md"), story("US-002", 2, "US-001", "NOT_STARTED", 2)); await writeFile(join(backlog, "US-003.md"), story("US-003", 1, "none", "NOT_STARTED", 3));
-  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution, githubAdapter }); await controller.selectProject(target); return { controller, target, control };
+  const persistenceRoot = join(control, ".agent", "unselected"); const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const controller = new LocalController(new AgentPersistence(persistenceRoot), { projectStore: store, executionService: execution, githubAdapter }); await controller.selectProject(target); return { controller, target, control, persistenceRoot };
 }
 
 test("selects deterministically, spawns before ACTIVE, and completes visibly", async () => {
@@ -61,6 +61,33 @@ test("continues an automatic plan once a fake GitHub adapter confirms the human 
 test("persists a terminal failure when spawn or configuration fails", async () => {
   const { controller } = await fixture(new FakeExecution(new Error("fake spawn failure"))); const run = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "auto" });
   assert.equal(run.status, "FAILED"); assert.match(run.resultSummary || "", /fake spawn failure/); assert.equal((await controller.project()).activeRunId, undefined); assert.equal((await controller.runs())[0].status, "FAILED");
+});
+
+test("records distinct normal, non-zero, signal and cancellation outcomes", async () => {
+  for (const outcome of [
+    { status: "SUCCEEDED" as const, summary: "completed", exitCode: 0 },
+    { status: "FAILED" as const, summary: "exited with 3", exitCode: 3 },
+    { status: "FAILED" as const, summary: "terminated by SIGTERM", exitCode: null },
+    { status: "CANCELLED" as const, summary: "cancelled by test", exitCode: null },
+  ]) {
+    const execution = new FakeExecution(); const { controller } = await fixture(execution); const run = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "auto" });
+    execution.finish(0, outcome); await new Promise((resolve) => setImmediate(resolve));
+    const saved = (await controller.runs()).find((item) => item.runId === run.runId)!;
+    assert.equal(saved.status, outcome.status); assert.equal(saved.resultSummary, outcome.summary); assert.equal(saved.processId, 4321); assert.equal(saved.attempts, 1);
+  }
+});
+
+test("stop requests cancellation and leaves a recoverable audit trail", async () => {
+  const execution = new FakeExecution(); const { controller } = await fixture(execution); const run = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "auto" });
+  const stopping = await controller.control(run.runId, "stop"); assert.ok(["STOP_REQUESTED", "CANCELLED"].includes(stopping.status));
+  for (let attempt = 0; attempt < 20 && (await controller.runs())[0].status !== "CANCELLED"; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  const saved = (await controller.runs()).find((item) => item.runId === run.runId)!; assert.equal(saved.status, "CANCELLED"); assert.match(saved.resultSummary || "", /cancelled/i); assert.equal(saved.processId, 4321);
+});
+
+test("restart reconciles a disappeared child process instead of showing it as running", async () => {
+  const execution = new FakeExecution(); const { controller, target, control, persistenceRoot } = await fixture(execution); const run = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "auto" });
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const restarted = new LocalController(new AgentPersistence(persistenceRoot), { projectStore: store, executionService: new FakeExecution() }); await restarted.selectProject(target);
+  const recovered = (await restarted.runs()).find((item) => item.runId === run.runId)!; assert.equal(recovered.status, "INTERRUPTED"); assert.equal(recovered.recoveryStatus, "INTERRUPTED"); assert.match(recovered.interruptionReason || "", /restarted/i); assert.equal(recovered.activity, "IDLE");
 });
 
 test("applies queued human instructions only to an explicit next invocation", async () => {
