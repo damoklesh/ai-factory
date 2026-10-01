@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { access, mkdir, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppConfigView, RunPhase, StoryDetail, TargetProject } from "@ai-factory/contracts";
 import { sanitizeText } from "./persistence.js";
@@ -41,7 +41,7 @@ export class ChildProcessExecutionService implements ExecutionService {
     if (!context.project.isGitRepository || !context.project.gitRoot) throw new Error("TARGET_GIT_REQUIRED");
     if (!context.project.github) throw new Error("TARGET_GITHUB_REMOTE_REQUIRED");
     if (!context.story.githubIssueNumber) throw new Error("STORY_NOT_SYNCED_TO_GITHUB");
-    const script = join(context.controlRoot, "automation", "dist", "src", "orchestrator.js"); await access(script);
+    const script = join(context.controlRoot, "automation", "dist", "src", "orchestrator.js"); await access(script); await assertAutomationBuildCurrent(context.controlRoot, script);
     await mkdir(context.stateRoot, { recursive: true });
     const configPath = join(context.stateRoot, `run-${context.runId}.config.json`);
     const storyContractPath = join(context.stateRoot, `run-${context.runId}.story.json`);
@@ -92,13 +92,23 @@ export class ChildProcessExecutionService implements ExecutionService {
       else if (cancelRequested) resolve({ status: "CANCELLED", summary: "Orchestrator cancelled by user", exitCode: code });
       else if (signal) resolve({ status: "CANCELLED", summary: `Orchestrator stopped by ${signal}`, exitCode: code });
       else if (code !== 0) resolve({ status: "FAILED", summary: lastMessage(stdout) || meaningfulStderr(stderr) || terminalOutcome || `Orchestrator exited with ${code}`, exitCode: code });
-      else if (/NEEDS_HUMAN|PAUSED_AUTH|PAUSED_QUOTA/i.test(terminalOutcome || "")) resolve({ status: "BLOCKED", summary: lastMessage(stdout) || terminalOutcome || meaningfulStderr(stderr) || "Orchestrator needs input.", exitCode: code });
+      else if (/NEEDS_HUMAN|PAUSED_AUTH|PAUSED_QUOTA|VERIFYING/i.test(terminalOutcome || "")) resolve({ status: "BLOCKED", summary: lastMessage(stdout) || terminalOutcome || meaningfulStderr(stderr) || "Orchestrator needs input.", exitCode: code });
       else if (/FAILED/i.test(terminalOutcome || "")) resolve({ status: "FAILED", summary: lastMessage(stdout) || terminalOutcome || meaningfulStderr(stderr) || "Orchestrator failed.", exitCode: code });
       else resolve({ status: "SUCCEEDED", summary: lastMessage(stdout) || meaningfulStderr(stderr) || "Orchestrator completed successfully.", exitCode: code });
     }));
     await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", (error) => { this.activeProjects.delete(context.project.projectId); reject(error); }); });
     return { pid: child.pid, completion, cancel: async () => { cancelRequested = true; await terminateProcessTree(child.pid); } };
   }
+}
+
+/** Fail safely instead of silently running an older automation/dist build. */
+async function assertAutomationBuildCurrent(controlRoot: string, script: string): Promise<void> {
+  const builtAt = (await stat(script)).mtimeMs;
+  const sources = ["orchestrator.ts", "git.ts", "verify.ts", "checks.ts", "state.ts", "processes.ts", "codex.ts", "github.ts"];
+  const modified = await Promise.all(sources.map(async (name) => {
+    try { return (await stat(join(controlRoot, "automation", "src", name))).mtimeMs; } catch { return 0; }
+  }));
+  if (Math.max(...modified) > builtAt) throw new Error("AUTOMATION_BUILD_STALE: run npm run build before starting an execution");
 }
 
 async function terminateProcessTree(pid: number | undefined): Promise<void> {
