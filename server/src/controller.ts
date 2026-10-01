@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import type { ApprovalRequest, AppConfigView, BacklogSyncPreview, BacklogSyncPublishResult, BacklogSyncRequest, BacklogValidation, ConfigUpdateRequest, DecisionRequest, DecisionResult, Diagnostic, GithubObservation, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RecentProject, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StoryDiagnostic, StorySummary, SyncResult, TargetProject } from "@ai-factory/contracts";
+import type { ApprovalRequest, AppConfigView, BacklogSyncPreview, BacklogSyncPublishResult, BacklogSyncRequest, BacklogValidation, ConfigUpdateRequest, DecisionRequest, DecisionResult, Diagnostic, GithubObservation, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectDoctorReport, ProjectSnapshot, ProjectStack, RecentProject, RunSnapshot, ScaffoldPlan, ScaffoldResult, SpecUpdateRequest, StartRunRequest, StoryDetail, StoryDiagnostic, StorySummary, SyncResult, TargetProject } from "@ai-factory/contracts";
 import { SCHEMA_VERSION } from "@ai-factory/contracts";
 import { AgentPersistence, sanitizeText } from "./persistence.js";
 import { BACKLOG_STORY_TEMPLATE, loadBacklog } from "./stories.js";
@@ -9,6 +9,7 @@ import { loadAppConfig, configFilePath } from "./config.js";
 import { ProjectWorkspaceStore } from "./projects.js";
 import { desiredIssue, issueRevision, previewBacklogSync, type IssueMirror, type SyncBaseline } from "./backlog-sync.js";
 import type { ExecutionHandle, ExecutionOutcome, ExecutionProcessEvent, ExecutionService } from "./execution.js";
+import { applyScaffold, cancelScaffold, inspectProject, planScaffold } from "./doctor.js";
 
 type Listener = (event: LogEntry) => void;
 export interface GithubSyncAdapter { observe(stories: StoryDetail[]): Promise<GithubObservation[]>; listIssues?(): Promise<IssueMirror[]>; createIssue?(input: { title: string; body: string; labels: string[] }): Promise<IssueMirror>; updateIssue?(number: number, input: { title: string; body: string; labels: string[] }): Promise<IssueMirror>; }
@@ -41,6 +42,7 @@ export class LocalController {
   private readonly executionHandles = new Map<string, ExecutionHandle>();
   private readonly eventQueues = new Map<string, Promise<void>>();
   private readonly configUpdates = new Map<string, { revision: string; config: AppConfigView; diff: string }>();
+  private scaffoldPlan?: ScaffoldPlan;
   constructor(private persistence = new AgentPersistence(), private readonly options: ControllerOptions = {}) { this.config = loadAppConfig(options.configPath); this.githubAdapter = options.githubAdapter; this.githubConnected = options.githubConnected === true || Boolean(options.githubAdapter); this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
 
   async project(): Promise<ProjectSnapshot> {
@@ -64,6 +66,10 @@ export class LocalController {
   async selectProject(targetPath: string): Promise<TargetProject> { if (!this.options.projectStore) throw new Error("PROJECT_SELECTION_UNAVAILABLE"); this.assertProjectSwitchAllowed(); const project = await this.options.projectStore.select(targetPath); this.applyProject(project); return project; }
   async initializeProject(targetPath: string, confirmationPath: string): Promise<TargetProject> { if (!this.options.projectStore) throw new Error("PROJECT_SELECTION_UNAVAILABLE"); this.assertProjectSwitchAllowed(); const project = await this.options.projectStore.initialize(targetPath, confirmationPath); this.applyProject(project); return project; }
   async recentProjects(): Promise<RecentProject[]> { return this.options.projectStore ? this.options.projectStore.recent() : []; }
+  async doctor(): Promise<ProjectDoctorReport> { await this.ensureProjectContext(); if (!this.activeProject) throw new Error("PROJECT_NOT_SELECTED"); return inspectProject(this.activeProject.targetPath); }
+  async previewScaffold(stack: ProjectStack): Promise<ScaffoldPlan> { await this.ensureProjectContext(); if (!this.activeProject) throw new Error("PROJECT_NOT_SELECTED"); if (["mixed", "unknown"].includes(stack)) throw new Error("STACK_CONFIRMATION_REQUIRED"); this.scaffoldPlan = await planScaffold(this.activeProject.targetPath, stack as ScaffoldPlan["stack"]); return this.scaffoldPlan; }
+  async createScaffold(stack: ProjectStack, confirm: boolean): Promise<ScaffoldResult> { await this.ensureProjectContext(); if (!this.activeProject?.gitRoot || !this.options.projectStore) throw new Error("TARGET_GIT_REQUIRED"); if (!this.scaffoldPlan || this.scaffoldPlan.stack !== stack) throw new Error("SCAFFOLD_PREVIEW_REQUIRED"); return applyScaffold(this.activeProject.gitRoot, this.options.projectStore.projectDataRoot(this.activeProject.projectId), this.scaffoldPlan, confirm); }
+  async cancelScaffold(): Promise<{ cancelled: true }> { await this.ensureProjectContext(); if (!this.activeProject?.gitRoot || !this.options.projectStore) throw new Error("TARGET_GIT_REQUIRED"); await cancelScaffold(this.activeProject.gitRoot, this.options.projectStore.projectDataRoot(this.activeProject.projectId)); return { cancelled: true }; }
   async previewBacklogSync(): Promise<BacklogSyncPreview> { await this.ensureStories(); if (this.options.projectStore && !this.activeProject) throw new Error("PROJECT_NOT_SELECTED"); this.assertValidBacklog(); const adapter = this.publishAdapter(); const preview = previewBacklogSync(this.stories, await adapter.listIssues!(), await this.persistence.readMetadata<SyncBaseline>("backlog-sync.json", { stories: {} })); this.syncPreviews.set(preview.previewId, preview); while (this.syncPreviews.size > 10) this.syncPreviews.delete(this.syncPreviews.keys().next().value!); this.applySyncActions(preview); return preview; }
   async publishBacklog(request: BacklogSyncRequest): Promise<BacklogSyncPublishResult> {
     await this.ensureStories(); this.assertValidBacklog(); const original = this.syncPreviews.get(request.previewId); if (!original) throw new Error("SYNC_PREVIEW_NOT_FOUND"); const adapter = this.publishAdapter(); const baseline = await this.persistence.readMetadata<SyncBaseline>("backlog-sync.json", { stories: {} }); const issues = await adapter.listIssues!(); const fresh = previewBacklogSync(this.stories, issues, baseline); if (!samePreview(original, fresh)) throw new Error("SYNC_PREVIEW_STALE");

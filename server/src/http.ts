@@ -32,6 +32,7 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
       if (request.method !== "GET" && (!hasSession(request, session) || !mutationOriginAllowed(request, origin))) return json(response, 403, { code: "AUTH_REQUIRED", message: "valid local session and same-origin request required" });
       if (request.method === "GET" && path === "/api/project") return json(response, 200, await controller.project());
       if (request.method === "GET" && path === "/api/projects") return json(response, 200, await controller.recentProjects());
+      if (request.method === "GET" && path === "/api/project/doctor") return json(response, 200, await controller.doctor());
       if (request.method === "GET" && path === "/api/stories") return json(response, 200, await controller.listStories({ search: url.searchParams.get("search") || undefined, status: url.searchParams.get("status") || undefined }));
       if (request.method === "GET" && path === "/api/stories/template") return json(response, 200, await controller.backlogValidation());
       if (request.method === "GET" && path.startsWith("/api/stories/")) { const story = await controller.story(decodeURIComponent(path.slice("/api/stories/".length))); return story ? json(response, 200, story) : json(response, 404, { code: "NOT_FOUND", message: "story not found" }); }
@@ -45,6 +46,9 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
       if (request.method === "POST" && path === "/api/runs") return json(response, 201, await controller.start(parseStartRunRequest(await body(request))));
       if (request.method === "POST" && path === "/api/projects/select") { const input = parseSelectProjectRequest(await body(request)); return json(response, 200, await controller.selectProject(input.targetPath)); }
       if (request.method === "POST" && path === "/api/projects/init") { const input = parseInitProjectRequest(await body(request)); return json(response, 200, await controller.initializeProject(input.targetPath, input.confirmationPath)); }
+      if (request.method === "POST" && path === "/api/project/scaffold/preview") { const input = await body(request) as { stack?: string }; return json(response, 200, await controller.previewScaffold(input.stack as never)); }
+      if (request.method === "POST" && path === "/api/project/scaffold/apply") { const input = await body(request) as { stack?: string; confirm?: boolean }; return json(response, 200, await controller.createScaffold(input.stack as never, input.confirm === true)); }
+      if (request.method === "POST" && path === "/api/project/scaffold/cancel") return json(response, 200, await controller.cancelScaffold());
       if (request.method === "POST" && path === "/api/backlog/sync/preview") return json(response, 200, await controller.previewBacklogSync());
       if (request.method === "POST" && path === "/api/backlog/sync") return json(response, 200, await controller.publishBacklog(parseBacklogSyncRequest(await body(request))));
       const runAction = path.match(/^\/api\/runs\/([^/]+)\/(pause|stop|resume)$/);

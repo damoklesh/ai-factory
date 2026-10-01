@@ -102,6 +102,10 @@ export interface TargetProject {
 export interface RecentProject { projectId: string; targetPath: string; gitRoot?: string; lastOpenedAt: string; }
 export interface SelectProjectRequest { targetPath: string; }
 export interface InitProjectRequest { targetPath: string; confirmationPath: string; }
+export type ProjectStack = "node" | "java" | "python" | "dotnet" | "go" | "mixed" | "unknown";
+export interface ProjectDoctorReport { stack: ProjectStack; detectedStacks: Exclude<ProjectStack, "mixed" | "unknown">[]; confidence: "CONFIRMED" | "AMBIGUOUS" | "UNKNOWN"; evidence: Array<{ path: string; reason: string }>; validationCommands: string[]; documentation: Array<{ path: string; exists: boolean }>; inspectedAt: string; }
+export interface ScaffoldPlan { stack: Exclude<ProjectStack, "mixed" | "unknown">; files: Array<{ path: string; action: "CREATE" | "KEEP"; purpose: string }>; validationCommands: string[]; requiresConfirmation: true; }
+export interface ScaffoldResult { branch: string; worktreePath: string; filesCreated: string[]; filesKept: string[]; validation: Array<{ command: string; status: "SKIPPED" | "PASS" | "FAIL"; detail: string }>; }
 
 export interface Diagnostic {
   name: string;
