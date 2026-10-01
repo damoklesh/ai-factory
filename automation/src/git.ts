@@ -88,6 +88,11 @@ export async function createWorktree(repoRoot: string, baseRef: string, branch: 
     // A resumed story may only exist on origin. Fetch the named branch without changing
     // the user's checkout, then prefer that exact branch over recreating from base.
     await runProcess("git", ["fetch", "origin", branch], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
+    // When a previous invocation published a commit, the local branch can be
+    // behind origin even though no worktree is currently registered. Fast
+    // forward only; never discard local commits or dirty work.
+    const ancestor = await runProcess("git", ["merge-base", "--is-ancestor", branch, `origin/${branch}`], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
+    if (ancestor.code === 0) await runProcess("git", ["branch", "--force", branch, `origin/${branch}`], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
     const existing = await runProcess("git", ["worktree", "add", path, branch], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
     if (existing.code === 0) return { path: await realpath(path), branch };
     const remote = await runProcess("git", ["worktree", "add", "-b", branch, path, `origin/${branch}`], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });

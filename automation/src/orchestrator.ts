@@ -156,7 +156,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         commit = pullRequest
           ? await commitLocal(worktree.path, `fix(agent): address US #${issue.number} validation/review findings`, { env: target.env, allowedPaths: config.allowedChangePaths })
           : await squashBranch(worktree.path, config.targetBranch, `feat: implement US #${issue.number}`, { env: target.env, allowedPaths: config.allowedChangePaths });
-        await pushBranch(worktree.path, branch, { env: target.env });
+        if (commit.changed) await pushBranch(worktree.path, branch, { env: target.env });
       } catch (error) {
         const reason = `Publishing validated changes failed: ${error instanceof Error ? error.message : String(error)}`;
         transition(state, issue.number, "FAILED_INFRA", { processStatus: "FAILED", fixerStatus: pullRequest ? "FAILED" : undefined, reason, validationAttempts });
