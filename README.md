@@ -9,9 +9,9 @@ npm ci
 npm run dev
 ```
 
-It listens on `http://127.0.0.1:3333` by default. `npm run start` uses the same production build and local controller. Opening the page only reads project state; it never starts a run. Mutations require the browser session cookie and an exact same-origin `Origin` header. GitHub and Codex diagnostics are displayed without exposing credentials.
+It listens on `http://127.0.0.1:3333` by default. `npm run start` uses the same production build and local controller. Opening the page only reads project state; it never starts a run. Paste a local target path in **Target project**, inspect the canonical Git root, branch, remotes, dirty state, and backlog, and only then start work. The AI Factory repository itself is rejected as a normal target. Mutations require the browser session cookie and an exact same-origin `Origin` header. GitHub and Codex diagnostics are displayed without exposing credentials.
 
-The UI packages are `ui/` (React), `server/` (Node HTTP API and local controller), and `packages/contracts/` (shared TypeScript contracts). Markdown stories are read from `backlog/` when that directory exists. Operational state is written to `.agent/`, which remains ignored by Git.
+The UI packages are `ui/` (React), `server/` (Node HTTP API and local controller), and `packages/contracts/` (shared TypeScript contracts). Markdown stories are read from `backlog/` under the selected target Git root. A non-Git directory is initialized only after the exact canonical path is typed as confirmation. Operational state and recent-project metadata are written per target under AI Factory's ignored `.agent/projects/<projectId>/`; nothing operational is written into the target checkout.
 
 Useful commands:
 

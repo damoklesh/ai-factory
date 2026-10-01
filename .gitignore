@@ -7,5 +7,6 @@ automation/coverage/
 automation/.cache/
 automation/logs/
 automation/config.json
+.agent/
 *.local.json
 .DS_Store

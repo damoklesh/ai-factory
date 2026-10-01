@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
-import { parseConfigUpdateRequest, parseDecisionRequest, parseInstructionRequest, parseSpecUpdateRequest, parseStartRunRequest, ContractValidationError } from "@ai-factory/contracts";
+import { parseConfigUpdateRequest, parseDecisionRequest, parseInitProjectRequest, parseInstructionRequest, parseSelectProjectRequest, parseSpecUpdateRequest, parseStartRunRequest, ContractValidationError } from "@ai-factory/contracts";
 import { LocalController } from "./controller.js";
 import { hasSession, mutationOriginAllowed, requestHostAllowed, writeSecurityHeaders, writeSessionCookie } from "./security.js";
 
@@ -28,6 +28,7 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
       }
       if (request.method !== "GET" && (!hasSession(request, session) || !mutationOriginAllowed(request, origin))) return json(response, 403, { code: "AUTH_REQUIRED", message: "valid local session and same-origin request required" });
       if (request.method === "GET" && path === "/api/project") return json(response, 200, await controller.project());
+      if (request.method === "GET" && path === "/api/projects") return json(response, 200, await controller.recentProjects());
       if (request.method === "GET" && path === "/api/stories") return json(response, 200, await controller.listStories({ search: url.searchParams.get("search") || undefined, status: url.searchParams.get("status") || undefined }));
       if (request.method === "GET" && path === "/api/stories/template") return json(response, 200, await controller.backlogValidation());
       if (request.method === "GET" && path.startsWith("/api/stories/")) { const story = await controller.story(decodeURIComponent(path.slice("/api/stories/".length))); return story ? json(response, 200, story) : json(response, 404, { code: "NOT_FOUND", message: "story not found" }); }
@@ -39,6 +40,8 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
       if (request.method === "GET" && path === "/api/config") return json(response, 200, await controller.configView());
       if (request.method === "GET" && path === "/api/history") return json(response, 200, await controller.history());
       if (request.method === "POST" && path === "/api/runs") return json(response, 201, await controller.start(parseStartRunRequest(await body(request))));
+      if (request.method === "POST" && path === "/api/projects/select") { const input = parseSelectProjectRequest(await body(request)); return json(response, 200, await controller.selectProject(input.targetPath)); }
+      if (request.method === "POST" && path === "/api/projects/init") { const input = parseInitProjectRequest(await body(request)); return json(response, 200, await controller.initializeProject(input.targetPath, input.confirmationPath)); }
       const runAction = path.match(/^\/api\/runs\/([^/]+)\/(pause|stop|resume)$/);
       if (request.method === "POST" && runAction) return json(response, 200, await controller.control(decodeURIComponent(runAction[1]), runAction[2] as "pause" | "stop" | "resume"));
       if (request.method === "POST" && path.startsWith("/api/runs/") && path.endsWith("/instructions")) { const instruction = parseInstructionRequest(await body(request)); return json(response, 202, await controller.addInstruction(decodeURIComponent(path.split("/")[3]), instruction)); }

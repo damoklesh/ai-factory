@@ -72,7 +72,30 @@ export interface ProjectSnapshot {
   counts: { total: number; done: number; blocked: number; active: number };
   lastSyncAt?: string;
   diagnostics?: Diagnostic[];
+  target?: TargetProject;
+  recentProjects?: RecentProject[];
 }
+
+export interface ProjectRemote { name: string; url: string; }
+export interface TargetProject {
+  projectId: string;
+  requestedPath: string;
+  targetPath: string;
+  gitRoot?: string;
+  isGitRepository: boolean;
+  currentBranch?: string;
+  baseBranch?: string;
+  remotes: ProjectRemote[];
+  dirty: boolean;
+  writable: boolean;
+  backlogPath: string;
+  backlogExists: boolean;
+  github?: { owner: string; repo: string };
+  selectedAt: string;
+}
+export interface RecentProject { projectId: string; targetPath: string; gitRoot?: string; lastOpenedAt: string; }
+export interface SelectProjectRequest { targetPath: string; }
+export interface InitProjectRequest { targetPath: string; confirmationPath: string; }
 
 export interface Diagnostic {
   name: string;
@@ -173,6 +196,16 @@ export function parseStartRunRequest(value: unknown): StartRunRequest {
   if (!isRecord(value) || !positiveInteger(value.maxStories) || typeof value.autoMerge !== "boolean") throw new ContractValidationError("run", "maxStories must be a positive integer and autoMerge must be boolean");
   const expectedConfigRevision = optionalString(value.expectedConfigRevision);
   return expectedConfigRevision ? { maxStories: value.maxStories, autoMerge: value.autoMerge, expectedConfigRevision } : { maxStories: value.maxStories, autoMerge: value.autoMerge };
+}
+
+export function parseSelectProjectRequest(value: unknown): SelectProjectRequest {
+  if (!isRecord(value) || typeof value.targetPath !== "string" || !value.targetPath.trim() || value.targetPath.length > 4_096) throw new ContractValidationError("targetPath", "targetPath must be a non-empty directory path");
+  return { targetPath: value.targetPath.trim() };
+}
+
+export function parseInitProjectRequest(value: unknown): InitProjectRequest {
+  if (!isRecord(value) || typeof value.targetPath !== "string" || !value.targetPath.trim() || typeof value.confirmationPath !== "string" || !value.confirmationPath.trim()) throw new ContractValidationError("project", "targetPath and the exact confirmationPath are required");
+  return { targetPath: value.targetPath.trim(), confirmationPath: value.confirmationPath.trim() };
 }
 
 export function parseDecisionRequest(value: unknown): DecisionRequest {

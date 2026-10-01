@@ -1,17 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import type { ApprovalRequest, AppConfigView, BacklogValidation, ConfigUpdateRequest, DecisionRequest, DecisionResult, Diagnostic, GithubObservation, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StoryDiagnostic, StorySummary, SyncResult } from "@ai-factory/contracts";
+import type { ApprovalRequest, AppConfigView, BacklogValidation, ConfigUpdateRequest, DecisionRequest, DecisionResult, Diagnostic, GithubObservation, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RecentProject, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StoryDiagnostic, StorySummary, SyncResult, TargetProject } from "@ai-factory/contracts";
 import { SCHEMA_VERSION } from "@ai-factory/contracts";
 import { AgentPersistence } from "./persistence.js";
 import { BACKLOG_STORY_TEMPLATE, loadBacklog } from "./stories.js";
 import { loadAppConfig, configFilePath } from "./config.js";
+import { ProjectWorkspaceStore } from "./projects.js";
 
 type Listener = (event: LogEntry) => void;
 export interface GithubSyncAdapter { observe(stories: StoryDetail[]): Promise<GithubObservation[]>; }
 
 interface OrchestratorStoryState { issueNumber: number; branch: string; status: string; fixCycles?: number; pullRequestNumber?: number; headSha?: string; reason?: string; updatedAt: string; }
 interface OrchestratorState { stories?: Record<string, OrchestratorStoryState>; }
+interface ControllerOptions { codexAvailable?: boolean; githubConnected?: boolean; githubObservations?: GithubObservation[]; githubAdapter?: GithubSyncAdapter; backlogRoot?: string; orchestratorStatePath?: string; approvals?: ApprovalRequest[]; configPath?: string; projectStore?: ProjectWorkspaceStore; }
 
 export class LocalController {
   private readonly listeners = new Set<Listener>();
@@ -29,15 +31,19 @@ export class LocalController {
   private lastSyncAt?: string;
   private syncStale = true;
   private githubConnected = false;
+  private activeProject?: TargetProject;
+  private projectContextLoaded = false;
   private readonly configUpdates = new Map<string, { revision: string; config: AppConfigView; diff: string }>();
-  constructor(private readonly persistence = new AgentPersistence(), private readonly options: { codexAvailable?: boolean; githubConnected?: boolean; githubObservations?: GithubObservation[]; githubAdapter?: GithubSyncAdapter; backlogRoot?: string; orchestratorStatePath?: string; approvals?: ApprovalRequest[]; configPath?: string } = {}) { this.config = loadAppConfig(options.configPath); this.githubConnected = options.githubConnected === true || Boolean(options.githubAdapter); this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
+  constructor(private persistence = new AgentPersistence(), private readonly options: ControllerOptions = {}) { this.config = loadAppConfig(options.configPath); this.githubConnected = options.githubConnected === true || Boolean(options.githubAdapter); this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
 
   async project(): Promise<ProjectSnapshot> {
+    await this.ensureProjectContext();
     await this.ensureStories();
     await this.refreshOrchestratorState();
     await this.ensureRuns();
     const diagnostics: Diagnostic[] = [
       { name: "controller", available: true, message: "local controller ready" },
+      { name: "target project", available: this.options.projectStore ? Boolean(this.activeProject) : true, message: this.activeProject ? `${this.activeProject.targetPath}${this.activeProject.dirty ? " (dirty)" : " (clean)"}` : this.options.projectStore ? "Select and confirm a target project" : "legacy fixed target" },
       { name: "backlog", available: !this.storyDiagnostics.some((item) => item.severity === "ERROR"), message: this.storyDiagnostics.length ? `${this.storyDiagnostics.filter((item) => item.severity === "ERROR").length} error(s), ${this.storyDiagnostics.filter((item) => item.severity === "WARNING").length} warning(s)` : "valid" },
       { name: "github", available: this.githubConnected, message: this.githubConnected ? "adapter connected" : "No GitHub adapter configured" },
       { name: "codex", available: this.options.codexAvailable !== false, message: this.options.codexAvailable === false ? "Codex executable is not available" : "available through the configured runner" },
@@ -46,8 +52,11 @@ export class LocalController {
     const codexAvailable = this.options.codexAvailable !== false;
     const live = this.activeRun && ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(this.activeRun.status) ? this.activeRun : undefined;
     const externalActive = this.stories.some((story) => ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(story.executionStatus));
-    return { schemaVersion: SCHEMA_VERSION, repository: { owner: this.config.owner, repo: this.config.repo, baseBranch: this.config.baseBranch }, controller: { available: true, version: "ui-v1" }, github: { connected: githubConnected, checkedAt: this.lastSyncAt, stale: this.syncStale, message: githubConnected ? undefined : "No GitHub adapter configured" }, codex: { available: codexAvailable, message: codexAvailable ? undefined : "Codex executable is not available" }, activeRunId: live?.runId, counts: { total: this.stories.length, done: this.stories.filter((story) => story.deliveryStatus === "MERGED").length, blocked: this.stories.filter((story) => Boolean(story.blockedReason)).length, active: live ? 1 : externalActive ? 1 : 0 }, lastSyncAt: this.lastSyncAt, diagnostics };
+    return { schemaVersion: SCHEMA_VERSION, repository: { owner: this.config.owner, repo: this.config.repo, baseBranch: this.config.baseBranch }, controller: { available: true, version: "ui-v1" }, github: { connected: githubConnected, checkedAt: this.lastSyncAt, stale: this.syncStale, message: githubConnected ? undefined : "No GitHub adapter configured" }, codex: { available: codexAvailable, message: codexAvailable ? undefined : "Codex executable is not available" }, activeRunId: live?.runId, counts: { total: this.stories.length, done: this.stories.filter((story) => story.deliveryStatus === "MERGED").length, blocked: this.stories.filter((story) => Boolean(story.blockedReason)).length, active: live ? 1 : externalActive ? 1 : 0 }, lastSyncAt: this.lastSyncAt, diagnostics, target: this.activeProject, recentProjects: this.options.projectStore ? await this.options.projectStore.recent() : undefined };
   }
+  async selectProject(targetPath: string): Promise<TargetProject> { if (!this.options.projectStore) throw new Error("PROJECT_SELECTION_UNAVAILABLE"); this.assertProjectSwitchAllowed(); const project = await this.options.projectStore.select(targetPath); this.applyProject(project); return project; }
+  async initializeProject(targetPath: string, confirmationPath: string): Promise<TargetProject> { if (!this.options.projectStore) throw new Error("PROJECT_SELECTION_UNAVAILABLE"); this.assertProjectSwitchAllowed(); const project = await this.options.projectStore.initialize(targetPath, confirmationPath); this.applyProject(project); return project; }
+  async recentProjects(): Promise<RecentProject[]> { return this.options.projectStore ? this.options.projectStore.recent() : []; }
   async listStories(query?: { search?: string; status?: string }): Promise<StorySummary[]> {
     await this.ensureStories();
     await this.refreshOrchestratorState();
@@ -100,6 +109,8 @@ export class LocalController {
     this.config = next; this.configRevision = createHash("sha256").update(JSON.stringify(next)).digest("hex").slice(0, 12); const result = { revision: this.configRevision, config: { ...this.config }, diff }; this.configUpdates.set(request.idempotencyKey, result); return result;
   }
   async sync(): Promise<SyncResult> {
+    await this.ensureProjectContext();
+    if (this.options.projectStore && !this.activeProject) throw new Error("PROJECT_NOT_SELECTED");
     await this.ensureStories();
     this.assertValidBacklog();
     if (!this.options.githubAdapter && this.options.githubConnected !== true) { this.githubConnected = false; this.syncStale = true; return { connected: false, stale: true, message: "GitHub unavailable; remote facts were not changed", changedStoryIds: [] }; }
@@ -120,6 +131,8 @@ export class LocalController {
   async configView(): Promise<AppConfigView & { revision: string }> { return { ...this.config, revision: this.configRevision }; }
   subscribe(listener: Listener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   async start(request: StartRunRequest): Promise<RunSnapshot> {
+    await this.ensureProjectContext();
+    if (this.options.projectStore && !this.activeProject) throw new Error("PROJECT_NOT_SELECTED");
     await this.ensureStories();
     this.assertValidBacklog();
     await this.ensureRuns();
@@ -143,8 +156,11 @@ export class LocalController {
   }
   private async persist(message: string): Promise<void> { if (!this.activeRun) return; await this.persistence.writeSnapshot(this.activeRun.runId, this.activeRun); this.runHistory = [this.activeRun, ...this.runHistory.filter((run) => run.runId !== this.activeRun?.runId)]; const event: LogEntry = { schemaVersion: SCHEMA_VERSION, eventId: randomUUID(), runId: this.activeRun.runId, sequence: (await this.persistence.readEvents(this.activeRun.runId)).length + 1, timestamp: new Date().toISOString(), source: "controller", phase: this.activeRun.phase, level: "INFO", message }; await this.persistence.appendEvent(this.activeRun.runId, event); for (const listener of this.listeners) listener(event); }
 
-  private async ensureStories(): Promise<void> { if (this.storiesLoaded) return; const backlog = await loadBacklog(this.options.backlogRoot); this.stories = backlog.stories; this.storyDiagnostics = backlog.diagnostics; this.storiesLoaded = true; }
+  private async ensureStories(): Promise<void> { await this.ensureProjectContext(); if (this.storiesLoaded) return; if (this.options.projectStore && !this.activeProject) { this.stories = []; this.storyDiagnostics = []; this.storiesLoaded = true; return; } const backlog = await loadBacklog(this.activeProject?.backlogPath || this.options.backlogRoot); this.stories = backlog.stories; this.storyDiagnostics = backlog.diagnostics; this.storiesLoaded = true; }
   private assertValidBacklog(): void { const first = this.storyDiagnostics.find((item) => item.severity === "ERROR"); if (first) throw new Error(`BACKLOG_INVALID: ${first.file}:${first.line} ${first.message}`); }
+  private async ensureProjectContext(): Promise<void> { if (this.projectContextLoaded) return; this.projectContextLoaded = true; if (!this.options.projectStore) return; const project = await this.options.projectStore.active(); if (project) this.applyProject(project); }
+  private applyProject(project: TargetProject): void { this.projectContextLoaded = true; this.activeProject = project; this.stories = []; this.storyDiagnostics = []; this.storiesLoaded = false; this.runHistory = []; this.runsLoaded = false; this.activeRun = undefined; this.persistence = new AgentPersistence(this.options.projectStore!.projectDataRoot(project.projectId)); if (project.github) this.config = { ...this.config, owner: project.github.owner, repo: project.github.repo, targetRepository: `${project.github.owner}/${project.github.repo}` }; if (project.baseBranch) this.config = { ...this.config, baseBranch: project.baseBranch, targetBranch: project.baseBranch }; }
+  private assertProjectSwitchAllowed(): void { if (this.activeRun && ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(this.activeRun.status)) throw new Error("RUN_ALREADY_ACTIVE"); }
   private async refreshOrchestratorState(): Promise<void> {
     if (!this.options.orchestratorStatePath) return;
     let parsed: OrchestratorState;
@@ -163,6 +179,7 @@ export class LocalController {
     return this.stories.filter((story) => story.agentStatus).map((story) => ({ schemaVersion: SCHEMA_VERSION, runId: `external-issue-${story.githubIssueNumber || story.storyId}`, storyId: story.storyId, status: story.executionStatus === "BLOCKED" ? "BLOCKED" : story.executionStatus === "FINISHED" ? "FINISHED" : "ACTIVE", phase: phaseForAgentStatus(story.agentStatus), startedAt: story.updatedAt, updatedAt: story.updatedAt, attempts: 1, maxStories: 1, autoMerge: false, validationStatus: story.validationStatus, effectiveConfigRevision: this.configRevision, interruptionReason: story.agentReason })) as RunSnapshot[];
   }
   private async ensureRuns(): Promise<void> {
+    await this.ensureProjectContext();
     if (this.runsLoaded) return;
     this.runHistory = await this.persistence.listSnapshots();
     const interrupted = this.runHistory.filter((run) => ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(run.status));
