@@ -71,7 +71,7 @@ export class ChildProcessExecutionService implements ExecutionService {
       configRevision: context.configRevision,
     };
     const temp = `${configPath}.${process.pid}.tmp`; await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, "utf8"); await rename(temp, configPath);
-    const storyContract = { objective: context.story.objective, acceptanceCriteria: context.story.acceptanceCriteria, scope: context.story.scope, dependencies: [], priority: context.story.priority, validation: context.story.validation };
+    const storyContract = { storyId: context.story.storyId, objective: context.story.objective, acceptanceCriteria: context.story.acceptanceCriteria, scope: context.story.scope, dependencies: [], sourceDependencies: context.story.dependencies, priority: context.story.priority, validation: context.story.validation };
     const storyTemp = `${storyContractPath}.${process.pid}.tmp`; await writeFile(storyTemp, `${JSON.stringify(storyContract, null, 2)}\n`, "utf8"); await rename(storyTemp, storyContractPath);
     const instructionTemp = `${instructionPath}.${process.pid}.tmp`; await writeFile(instructionTemp, `${JSON.stringify(context.instructions || [], null, 2)}\n`, "utf8"); await rename(instructionTemp, instructionPath);
     const args = [script, "--config", configPath, "--max-stories", "1", "--story-id", context.story.storyId, "--story-contract", storyContractPath, "--instruction-file", instructionPath, "--run-id", context.runId];

@@ -15,7 +15,7 @@ test("maps GitHub issues, pull requests and checks without exposing the token", 
   });
   const story = { storyId: "US-007" } as StoryDetail;
   const observations = await adapter.observe([story]);
-  assert.deepEqual(observations[0], { storyId: "US-007", githubIssueNumber: 7, pullRequestNumber: 12, headSha: "abc123", state: "OPEN", checks: "PASS", checkedAt: observations[0].checkedAt });
+  assert.deepEqual(observations[0], { storyId: "US-007", githubIssueNumber: 7, pullRequestNumber: 12, headSha: "abc123", validatedHeadSha: "abc123", state: "OPEN", checks: "PASS", checkedAt: observations[0].checkedAt });
   assert.equal(requests.some((request) => request.url.includes("/check-runs")), false);
   assert.equal(requests.every((request) => request.authorization === "Bearer secret-token"), true);
   assert.doesNotMatch(JSON.stringify(observations), /secret-token/);

@@ -62,7 +62,8 @@ export function parseStory(issue: Issue): StoryContract {
   if (acceptanceCriteria.length === 0) throw new Error(`#${issue.number}: missing acceptance criteria`);
   if (!scope) throw new Error(`#${issue.number}: missing Scope`);
   if (!priorityText || !/^\d+$/.test(priorityText) || Number(priorityText) < 1) throw new Error(`#${issue.number}: Priority must be a positive integer`);
-  return { objective, acceptanceCriteria, scope, dependencies: parseDependencies(dependencyText), priority: Number(priorityText), validation };
+  const storyId = issue.body.match(/AI_FACTORY_STORY_ID:\s*([^\s<]+)/i)?.[1] || issue.title.match(/^\[([^\]]+)\]/)?.[1];
+  return { storyId, objective, acceptanceCriteria, scope, dependencies: parseDependencies(dependencyText), priority: Number(priorityText), validation };
 }
 
 export interface StorySelection {

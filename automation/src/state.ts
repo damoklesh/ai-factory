@@ -59,7 +59,7 @@ export function canStartFix(state: StoryState, maxFixCycles: number): boolean {
 export function shouldRunDeveloper(pullRequestExists: boolean, previous?: StoryState, explicitResume = false): boolean {
   if (!pullRequestExists) return true;
   if (!previous) return false;
-  if (previous.status === "REVIEW_CHANGES_REQUESTED" || previous.fixCause === "REVIEW_CHANGES_REQUESTED") return true;
+  if (previous.status === "REVIEW_CHANGES_REQUESTED" || previous.fixCause === "REVIEW_CHANGES_REQUESTED" || previous.fixCause === "CI_FAILURE") return true;
   // A manually resumed human-blocked review may continue with a fresh bounded
   // correction budget. This is never selected automatically.
   return explicitResume && previous.status === "NEEDS_HUMAN" && Boolean(previous.reviewFindings?.length);

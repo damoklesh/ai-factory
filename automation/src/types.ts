@@ -20,12 +20,16 @@ export type StoryStatus =
   | "FAILED_INFRA";
 
 export interface StoryContract {
+  /** Stable product identifier (for example US-001), distinct from GitHub issue number. */
+  storyId?: string;
   objective: string;
   acceptanceCriteria: string[];
   scope: string;
   dependencies: number[];
   priority: number;
   validation: string[];
+  /** Original backlog dependencies when the controller supplied the contract. */
+  sourceDependencies?: string[];
 }
 
 export interface Issue {

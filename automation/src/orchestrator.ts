@@ -45,7 +45,7 @@ export function parseArgs(args: string[]): CliOptions {
 }
 
 function storyPrompt(issue: Issue, contract: StoryContract, feedback = "", instructions: string[] = [], attemptId = "implement-0", resuming = false, configuredGuidance = ""): string {
-  return [`Implement GitHub Issue #${issue.number}: ${issue.title}`, `Attempt: ${attemptId}`, resuming ? "Resume the existing implementation in this worktree. Inspect and preserve valid work already present; continue from the current state instead of recreating the project." : "Start the implementation in the current worktree.", `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Scope: ${contract.scope}`, `Validation: ${contract.validation.join("; ") || "use configured validation commands"}`, feedback ? `Feedback from the previous gate (only unresolved findings for the prior SHA):\n${feedback}` : "", instructions.length ? `Additional human instructions for this invocation:\n${instructions.map((item) => `- ${item}`).join("\n")}` : "", configuredGuidance ? `Developer guidance from configuration:\n${configuredGuidance}` : "", "Work only in the current worktree. Do not change controller policy, CI protections, or credentials. Do not declare review clean or merge. End with the required JSON result."].filter(Boolean).join("\n");
+  return [`Implement ${contract.storyId || `GitHub Issue #${issue.number}`}: ${issue.title}`, `GitHub issue: #${issue.number}`, `Attempt: ${attemptId}`, resuming ? "Resume the existing implementation in this worktree. Inspect and preserve valid work already present; continue from the current state instead of recreating the project." : "Start the implementation in the current worktree.", `Objective: ${contract.objective}`, "Acceptance criteria:", ...contract.acceptanceCriteria.map((item) => `- ${item}`), `Scope: ${contract.scope}`, contract.sourceDependencies?.length ? `Original dependencies: ${contract.sourceDependencies.join(", ")}` : "", `Validation: ${contract.validation.join("; ") || "use configured validation commands"}`, feedback ? `Feedback from the previous gate (only unresolved findings for the prior SHA):\n${feedback}` : "", instructions.length ? `Additional human instructions for this invocation:\n${instructions.map((item) => `- ${item}`).join("\n")}` : "", configuredGuidance ? `Developer guidance from configuration:\n${configuredGuidance}` : "", "Work only in the current worktree. Do not change controller policy, CI protections, or credentials. Do not declare review clean or merge. End with the required JSON result."].filter(Boolean).join("\n");
 }
 
 function reviewPrompt(issue: Issue, contract: StoryContract, diff: string, validationOutput: string, snapshot: { storyId: string; runId: string; pullRequest: number; sha: string }, configuredGuidance = ""): string {
@@ -76,6 +76,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Preparing isolated worktree for issue #${issue.number}` });
   const state = await loadState(stateFile);
   const branch = `agent/issue-${issue.number}`;
+  const stableStoryId = contract.storyId || storyIssueId(issue) || `US-${String(issue.number).padStart(3, "0")}`;
   const root = target.path;
   let worktree: Worktree | undefined;
   let pullRequest: PullRequest | undefined = freshStart ? undefined : (await client.listPullRequests(branch))[0];
@@ -87,7 +88,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   let feedback = feedbackForResume(previous, manualContinuation);
   let cycle = pullRequest ? (manualContinuation ? 0 : previous?.fixCycles || 0) : 0;
   let implementationAttempt = 0;
-  let validationAttempts = previous?.validationAttempts || 0;
+  let validationAttempts = manualContinuation ? 0 : previous?.validationAttempts || 0;
   let developerNeeded = shouldRunDeveloper(Boolean(pullRequest), previous, explicitResume);
   transition(state, issue.number, developerNeeded ? "IMPLEMENTING" : "PR_OPEN", { branch, pullRequestNumber: pullRequest?.number, headSha: freshStart ? undefined : previous?.headSha, fixCycles: cycle, startedAt: new Date().toISOString(), processStatus: "STARTING", sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}`, manualContinuationCount: manualContinuation ? (previous?.manualContinuationCount || 0) + 1 : previous?.manualContinuationCount, ...(freshStart ? { reason: undefined, validation: undefined, validationAttempts: undefined, fixCause: undefined, checkpointSha: undefined, changedFiles: undefined, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined, reviewerStartedAt: undefined, reviewerFinishedAt: undefined, reviewFindings: undefined, reviewEvidence: undefined, reviewPublicationKey: undefined, reviewUrl: undefined } : {}) });
   await saveState(stateFile, state);
@@ -171,7 +172,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
       let validationText = "";
       let validationEvidence: Array<{ command: string; passed: boolean; output: string }> = [];
       let checks: Awaited<ReturnType<typeof waitForRequiredChecks>>;
-      let commit: Awaited<ReturnType<typeof commitLocal>>;
+      let commit = { sha: "", changed: false, files: [] as string[] };
       if (skipLocalValidation && pullRequest && resumeChecks) {
         commit = { sha: pullRequest.headSha, changed: false, files: [] };
         checks = resumeChecks;
@@ -197,6 +198,9 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await saveState(stateFile, state);
         emitOperationalEvent({ source: "git", phase: developerPhase, message: `Local checkpoint committed on ${branch} at ${checkpoint.sha.slice(0, 12)} before validation` });
         }
+        // The initial implementation is compacted before validation so the
+        // locally validated SHA is also the SHA that will be published.
+        if (!pullRequest) checkpoint = await squashBranch(worktree.path, config.targetBranch, `feat: implement ${contract.storyId || `US #${issue.number}`}`, { env: target.env, allowedPaths: config.allowedChangePaths });
         validationAttempts += 1;
       emitOperationalEvent({ source: "validation", phase: "TESTING", message: `Running validation attempt ${validationAttempts}/${config.maxValidationAttempts}: ${config.validationCommands.length} validation and ${config.smokeCommands.length} smoke command(s)`, command: [...config.validationCommands, ...config.smokeCommands].join(" && ") });
       const plan = await runValidationPlan(config.validationCommands, config.smokeCommands, worktree.path, config.timeouts.workflowMinutes * 60_000); const validation = [...plan.validation, ...plan.smoke];
@@ -219,12 +223,13 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         }
         continue;
       }
-      emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: pullRequest ? `Publishing validated checkpoint on ${branch}` : `Squashing local checkpoints into the reviewed commit on ${branch}` });
+      emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `Publishing locally validated SHA on ${branch}` });
       try {
-        commit = pullRequest
-          ? await commitLocal(worktree.path, `fix(agent): address US #${issue.number} validation/review findings`, { env: target.env, allowedPaths: config.allowedChangePaths })
-          : await squashBranch(worktree.path, config.targetBranch, `feat: implement US #${issue.number}`, { env: target.env, allowedPaths: config.allowedChangePaths });
-        if (commit.changed) await pushBranch(worktree.path, branch, { env: target.env });
+        // `checkpoint` may already have committed all developer changes. Push
+        // the validated HEAD even when the worktree is clean; otherwise CI is
+        // asked to validate a local-only SHA that GitHub cannot possibly know.
+        if (!skipLocalValidation) commit = { sha: await gitSha(worktree.path), changed: true, files: state.stories[String(issue.number)].changedFiles || [] };
+        await pushBranch(worktree.path, branch, { env: target.env });
       } catch (error) {
         const reason = `Publishing validated changes failed: ${error instanceof Error ? error.message : String(error)}`;
         transition(state, issue.number, "FAILED_INFRA", { processStatus: "FAILED", fixerStatus: pullRequest ? "FAILED" : undefined, reason, validationAttempts });
@@ -233,22 +238,31 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], reason));
         return { status: "FAILED_INFRA", state: state.stories[String(issue.number)] };
       }
-      const body = buildPullRequestBody(issue.number, branch, { storyId: `US-${String(issue.number).padStart(3, "0")}`, objective: contract.objective, acceptanceCriteria: contract.acceptanceCriteria, validation: validationEvidence, sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}` });
-      if (!pullRequest) pullRequest = await client.createPullRequest({ title: issue.title, body, headBranch: branch, baseBranch: config.baseBranch });
-      else if (client.updatePullRequest) pullRequest = await client.updatePullRequest(pullRequest.number, { title: issue.title, body });
-      transition(state, issue.number, "PR_OPEN", { pullRequestNumber: pullRequest.number, headSha: commit.sha, branch, fixCycles: cycle, fixCause: undefined, validation: validationEvidence, changedFiles: commit.files, pullRequestUrl: `https://github.com/${config.owner}/${config.repo}/pull/${pullRequest.number}`, processStatus: "SUCCEEDED" });
+      try {
+        const body = buildPullRequestBody(issue.number, branch, { storyId: stableStoryId, objective: contract.objective, acceptanceCriteria: contract.acceptanceCriteria, validation: validationEvidence, sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}` });
+        if (!pullRequest) pullRequest = await client.createPullRequest({ title: issue.title, body, headBranch: branch, baseBranch: config.baseBranch });
+        else if (client.updatePullRequest) pullRequest = await client.updatePullRequest(pullRequest.number, { title: issue.title, body });
+        pullRequest = await client.getPullRequest(pullRequest.number);
+        if (pullRequest.headSha !== commit.sha) throw new Error(`PUBLISH_RECONCILIATION_FAILED: local validated SHA ${commit.sha} does not match PR #${pullRequest.number} HEAD ${pullRequest.headSha}`);
+      } catch (error) {
+        const reason = `Publishing reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
+        transition(state, issue.number, "FAILED_INFRA", { processStatus: "FAILED", reason, validationAttempts });
+        await saveState(stateFile, state); await mark(client, issue, "agent:blocked"); await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], reason));
+        return { status: "FAILED_INFRA", state: state.stories[String(issue.number)] };
+      }
+      transition(state, issue.number, "PR_OPEN", { pullRequestNumber: pullRequest.number, headSha: pullRequest.headSha, branch, fixCycles: cycle, fixCause: undefined, validation: validationEvidence, changedFiles: commit.files, pullRequestUrl: `https://github.com/${config.owner}/${config.repo}/pull/${pullRequest.number}`, processStatus: "SUCCEEDED" });
       await saveState(stateFile, state);
       emitOperationalEvent({
         source: "github",
         phase: "CI",
         level: config.requiredChecks.length ? "INFO" : "WARN",
         message: config.requiredChecks.length
-          ? `Waiting for required checks on ${commit.sha.slice(0, 12)}`
-          : `Bootstrap mode: no required checks configured for ${commit.sha.slice(0, 12)}; continuing to reviewer, merge remains disabled`,
+          ? `Waiting for required checks on published PR SHA ${pullRequest.headSha.slice(0, 12)}`
+          : `Bootstrap mode: no required checks configured for ${pullRequest.headSha.slice(0, 12)}; continuing to reviewer, merge remains disabled`,
         activity: config.requiredChecks.length ? "WAITING_FOR_CHECKS" : "RUNNING",
       });
       try {
-        checks = await waitForRequiredChecks(client, commit.sha, config.requiredChecks, config.timeouts.ciMinutes * 60_000);
+        checks = await waitForRequiredChecks(client, pullRequest.headSha, config.requiredChecks, config.timeouts.ciMinutes * 60_000);
       } catch (error) {
         const reason = `Unable to read GitHub Actions workflow status: ${error instanceof Error ? error.message : String(error)}`;
         transition(state, issue.number, "FAILED_INFRA", { processStatus: "FAILED", reason, validationAttempts });
@@ -258,25 +272,25 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         return { status: "FAILED_INFRA", state: state.stories[String(issue.number)] };
       }
       if (checks.decision === "FAIL") {
-        feedback = config.requiredChecks.length ? `Required CI checks failed or timed out for SHA ${commit.sha}.` : "No required checks configured; configure at least one required check before merge.";
+        feedback = config.requiredChecks.length ? `Required CI checks failed for published SHA ${pullRequest.headSha}.` : "No required checks configured; configure at least one required check before merge.";
         const nextCycle = nextFixCycle(cycle, "CI_FAILURE");
         if (nextCycle > config.maxFixCycles) break;
         transition(state, issue.number, "FIXING", { fixCycles: nextCycle, fixCause: "CI_FAILURE", reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
         await saveState(stateFile, state);
         developerNeeded = true;
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
-        cycle = nextCycle;
+        cycle = nextCycle; validationAttempts = 0;
         continue;
       }
       }
-      transition(state, issue.number, "REVIEWING", { headSha: commit.sha });
+      transition(state, issue.number, "REVIEWING", { headSha: pullRequest.headSha });
       await saveState(stateFile, state);
       emitOperationalEvent({ source: "reviewer", phase: "REVIEWING", message: `Reviewer agent started for issue #${issue.number}` });
       const diff = await gitDiff(worktree.path, config.baseBranch);
       const runId = config.runId || "cli";
-      const snapshot = { storyId: `US-${String(issue.number).padStart(3, "0")}`, runId, pullRequest: pullRequest.number, sha: commit.sha };
-      const publicationKey = `${runId}:${issue.number}:${cycle}:${commit.sha}`;
-      transition(state, issue.number, "REVIEWING", { reviewerStatus: "RUNNING", reviewerStartedAt: new Date().toISOString(), reviewSha: commit.sha, reviewPublicationKey: publicationKey });
+      const snapshot = { storyId: stableStoryId, runId, pullRequest: pullRequest.number, sha: pullRequest.headSha };
+      const publicationKey = `${runId}:${issue.number}:${cycle}:${pullRequest.headSha}`;
+      transition(state, issue.number, "REVIEWING", { reviewerStatus: "RUNNING", reviewerStartedAt: new Date().toISOString(), reviewSha: pullRequest.headSha, reviewPublicationKey: publicationKey });
       await saveState(stateFile, state);
       let review;
       try {
@@ -299,7 +313,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
         return { status: "REVIEW_FAILED", state: state.stories[String(issue.number)] };
       }
-      transition(state, issue.number, "REVIEWING", { reviewHeadSha: commit.sha, reviewerStatus: "SUCCEEDED", reviewerFinishedAt: new Date().toISOString(), reviewFindings: review.findings, reviewEvidence: review.evidence, reviewUrl });
+      transition(state, issue.number, "REVIEWING", { reviewHeadSha: pullRequest.headSha, reviewerStatus: "SUCCEEDED", reviewerFinishedAt: new Date().toISOString(), reviewFindings: review.findings, reviewEvidence: review.evidence, reviewUrl });
       await saveState(stateFile, state);
       if (review.decision === "NEEDS_HUMAN") {
         transition(state, issue.number, "NEEDS_HUMAN", { reason: review.findings.join("; ") || "Reviewer requested human decision" });
@@ -316,10 +330,10 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await saveState(stateFile, state);
         developerNeeded = true;
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
-        cycle = nextCycle;
+        cycle = nextCycle; validationAttempts = 0;
         continue;
       }
-      transition(state, issue.number, "REVIEW_APPROVED", { reviewHeadSha: commit.sha });
+      transition(state, issue.number, "REVIEW_APPROVED", { reviewHeadSha: pullRequest.headSha });
       await saveState(stateFile, state);
       let gate;
       try {
@@ -327,26 +341,26 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         const reviewThreads = client.getReviewThreads
           ? await client.getReviewThreads(pullRequest.number, current.headSha)
           : { available: false, threads: [], reason: "review thread provider unavailable" };
-        gate = evaluateMergeGate({ currentSha: current.headSha, reviewedSha: commit.sha, reviewDecision: review.decision, checks: checks.checks, requiredChecks: config.requiredChecks, reviewThreads });
+        gate = evaluateMergeGate({ currentSha: current.headSha, reviewedSha: pullRequest.headSha, reviewDecision: review.decision, checks: checks.checks, requiredChecks: config.requiredChecks, reviewThreads });
       } catch (error) {
         transition(state, issue.number, "MERGE_FAILED", { reason: error instanceof Error ? error.message : String(error) });
         await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
         return { status: "MERGE_FAILED", state: state.stories[String(issue.number)] };
       }
       if (!gate.ready) {
-        transition(state, issue.number, "READY_FOR_MERGE", { reason: gate.reason, headSha: commit.sha });
+        transition(state, issue.number, "READY_FOR_MERGE", { reason: gate.reason, headSha: pullRequest.headSha });
         await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
         return { status: "READY_FOR_MERGE", state: state.stories[String(issue.number)] };
       }
       if (!config.autoMerge) {
-        transition(state, issue.number, "MERGE_PENDING_APPROVAL", { headSha: commit.sha, reviewHeadSha: commit.sha, reason: "Awaiting human merge approval" });
+        transition(state, issue.number, "MERGE_PENDING_APPROVAL", { headSha: pullRequest.headSha, reviewHeadSha: pullRequest.headSha, reason: "Awaiting human merge approval" });
         await saveState(stateFile, state);
         emitOperationalEvent({ source: "github", phase: "WAITING", message: `Awaiting human merge approval for PR #${pullRequest.number}`, activity: "WAITING_FOR_INPUT", outcome: "MERGE_PENDING_APPROVAL" });
         return { status: "MERGE_PENDING_APPROVAL", state: state.stories[String(issue.number)] };
       }
       let merged;
       try {
-        merged = await mergeReviewedPullRequest(client, pullRequest.number, commit.sha);
+        merged = await mergeReviewedPullRequest(client, pullRequest.number, pullRequest.headSha);
       } catch (error) {
         transition(state, issue.number, "MERGE_FAILED", { reason: error instanceof Error ? error.message : String(error) });
         await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
@@ -356,7 +370,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         transition(state, issue.number, "MERGE_FAILED", { reason: merged.message }); await saveState(stateFile, state); await mark(client, issue, "agent:blocked");
         return { status: "MERGE_FAILED", state: state.stories[String(issue.number)] };
       }
-      transition(state, issue.number, "DONE", { headSha: commit.sha, reviewHeadSha: commit.sha });
+      transition(state, issue.number, "DONE", { headSha: pullRequest.headSha, reviewHeadSha: pullRequest.headSha });
       await saveState(stateFile, state); await client.closeIssue(issue.number); await mark(client, issue, "agent:done");
       return { status: "DONE", state: state.stories[String(issue.number)] };
     }

@@ -41,7 +41,8 @@ export class GitHubSyncAdapter {
       const checkedAt = new Date().toISOString();
       if (!pullRequest) { observations.push({ storyId: story.storyId, githubIssueNumber: issueNumber, state: issue?.state === "closed" ? "CLOSED" : "OPEN", checks: "UNKNOWN", checkedAt }); continue; }
       const checks = await this.actionChecks(pullRequest.head.sha);
-      observations.push({ storyId: story.storyId, githubIssueNumber: issueNumber, pullRequestNumber: pullRequest.number, headSha: pullRequest.head.sha, state: pullRequest.merged_at ? "MERGED" : pullRequest.state === "open" ? "OPEN" : "CLOSED", checks: checkStatus(checks), checkedAt });
+      const status = checkStatus(checks);
+      observations.push({ storyId: story.storyId, githubIssueNumber: issueNumber, pullRequestNumber: pullRequest.number, headSha: pullRequest.head.sha, validatedHeadSha: status === "PASS" ? pullRequest.head.sha : undefined, state: pullRequest.merged_at ? "MERGED" : pullRequest.state === "open" ? "OPEN" : "CLOSED", checks: status, checkedAt });
     }
     return observations;
   }
