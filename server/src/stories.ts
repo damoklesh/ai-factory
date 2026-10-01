@@ -19,18 +19,18 @@ export async function loadRepositoryStories(root = resolve("backlog")): Promise<
 
 export function parseMarkdown(fileName: string, markdown: string): StoryDetail {
   const { frontmatter, body } = splitFrontmatter(markdown);
-  const storyId = frontmatter.storyId || basename(fileName, ".md");
-  const title = frontmatter.title || firstHeading(body) || storyId;
+  const storyId = canonicalStoryId(frontmatter.storyId || basename(fileName, ".md"));
+  const title = frontmatter.title || firstHeading(body)?.replace(new RegExp(`^${storyId}\\s*[—–-]\\s*`, "i"), "").trim() || storyId;
   const criteria = sectionList(body, ["acceptance criteria", "criterios de aceptación", "criteria"]);
   const objective = sectionText(body, ["objective", "objetivo"]) || body.trim();
-  const scope = sectionText(body, ["scope", "alcance"]);
+  const scope = sectionText(body, ["scope", "alcance", "contexto tecnico necesario"]);
   const validation = sectionList(body, ["validation", "validación", "tests"]);
   const revision = frontmatter.specRevision || createHash("sha256").update(markdown).digest("hex").slice(0, 12);
   return {
     storyId,
     title,
-    priority: numberValue(frontmatter.priority, 99),
-    dependencies: csv(frontmatter.dependencies),
+    priority: numberValue(frontmatter.priority || inlineMetadata(body, "prioridad")?.replace(/^P/i, ""), 99),
+    dependencies: csv(frontmatter.dependencies || inlineMetadata(body, "dependencias")),
     deliveryStatus: frontmatter.deliveryStatus as StoryDetail["deliveryStatus"] || "NOT_STARTED",
     executionStatus: "IDLE",
     validationStatus: "PENDING",
@@ -73,13 +73,20 @@ function firstHeading(markdown: string): string | undefined { return markdown.ma
 function sectionText(markdown: string, names: string[]): string { const block = section(markdown, names); return block.replace(/^[-*]\s+/gm, "").trim(); }
 function sectionList(markdown: string, names: string[]): string[] { return section(markdown, names).split(/\r?\n/).map((line) => line.replace(/^\s*[-*]\s+/, "").trim()).filter(Boolean); }
 function section(markdown: string, names: string[]): string {
-  const wanted = new Set(names.map((name) => name.toLowerCase()));
+  const normalizedNames = names.map(normalizeHeading);
+  if (normalizedNames.includes("acceptance criteria")) normalizedNames.push("criterios de aceptacion");
+  if (normalizedNames.includes("validation") || normalizedNames.includes("validacion")) normalizedNames.push("validacion tecnica");
+  if (normalizedNames.includes("scope")) normalizedNames.push("contexto tecnico necesario");
+  const wanted = new Set(normalizedNames);
   const lines = markdown.split(/\r?\n/);
-  const start = lines.findIndex((line) => wanted.has(line.replace(/^##\s+/, "").trim().toLowerCase()));
+  const start = lines.findIndex((line) => wanted.has(normalizeHeading(line.replace(/^##\s+/, "").trim())));
   if (start < 0 || !lines[start].startsWith("##")) return "";
   const end = lines.slice(start + 1).findIndex((line) => /^##\s+/.test(line));
   return lines.slice(start + 1, end < 0 ? undefined : start + 1 + end).join("\n").trim();
 }
+function normalizeHeading(value: string): string { return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
+function canonicalStoryId(value: string): string { return value.match(/^US-\d+/i)?.[0].toUpperCase() || value; }
+function inlineMetadata(markdown: string, key: string): string | undefined { return markdown.match(new RegExp(`${key}\\s*:\\s*\\**\\s*([^\\.\\n]+)`, "i"))?.[1]?.replace(/\*/g, "").trim(); }
 function csv(value?: string): string[] { return (value || "").split(",").map((item) => item.trim()).filter(Boolean); }
 function numberValue(value: string | undefined, fallback: number): number { const number = Number(value); return Number.isInteger(number) && number > 0 ? number : fallback; }
 function numberOptional(value?: string): number | undefined { const number = Number(value); return Number.isInteger(number) && number > 0 ? number : undefined; }

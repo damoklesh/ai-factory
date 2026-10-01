@@ -14,7 +14,6 @@ export class GitHubSyncAdapter {
     const pullRequests = await this.request<PullRequest[]>(`/pulls?state=all&per_page=100`);
     const observations: GithubObservation[] = [];
     for (const story of stories) {
-      if (!story.githubIssueNumber) continue;
       const issue = issues.find((item) => item.number === story.githubIssueNumber) || issues.find((item) => item.title.startsWith(`[${story.storyId}]`) || (item.body || "").includes(`AI_FACTORY_STORY_ID: ${story.storyId}`));
       const issueNumber = story.githubIssueNumber || issue?.number;
       if (!issueNumber) continue;

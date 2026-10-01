@@ -26,6 +26,9 @@ export interface StorySummary {
   validatedHeadSha?: string;
   externalStatus?: "OPEN" | "CLOSED" | "MERGED" | "UNKNOWN";
   externalStale?: boolean;
+  agentStatus?: string;
+  agentReason?: string;
+  branch?: string;
 }
 
 export interface StoryDetail extends StorySummary {

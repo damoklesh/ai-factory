@@ -13,8 +13,11 @@ const token = githubToken();
 const githubAdapter = token && config.owner !== "OWNER" && config.repo !== "REPO" ? new GitHubSyncAdapter(config.owner, config.repo, token) : undefined;
 const targetWorkspace = resolve(repositoryRoot, config.targetWorkspace || join("..", "workspaces", config.repo));
 const backlogRoot = resolve(targetWorkspace, config.targetBacklogPath || "backlog");
-const app = createAppServer({ port, uiDirectory, controller: new LocalController(undefined, { githubAdapter, backlogRoot }) });
+const orchestratorStatePath = resolve(repositoryRoot, "automation", config.stateFile || ".cache/state.json");
+const controller = new LocalController(undefined, { githubAdapter, backlogRoot, orchestratorStatePath });
+const app = createAppServer({ port, uiDirectory, controller });
 app.server.listen(port, "127.0.0.1", () => {
   console.log(`AI Factory UI listening at http://127.0.0.1:${port}`);
   if (githubAdapter) void app.controller.sync();
 });
+if (githubAdapter) { const timer = setInterval(() => void app.controller.sync(), 15_000); timer.unref(); }

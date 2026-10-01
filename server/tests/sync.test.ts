@@ -28,3 +28,13 @@ test("degrades without GitHub and keeps the last facts stale", async () => {
   const result = await controller.sync(); assert.equal(result.connected, false); assert.equal(result.stale, true); assert.match(result.message, /unavailable/i);
   assert.equal((await controller.project()).github.stale, true);
 });
+
+test("projects the CLI orchestrator state into stories and executions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-external-state-")); const backlog = join(root, "backlog"); await mkdir(backlog);
+  await writeFile(join(backlog, "US-01-landing.md"), "---\nstoryId: US-01\ngithubIssueNumber: 1\n---\n# US-01 — Landing\n\n## Objective\nBuild the landing.\n\n## Acceptance criteria\n- It works.\n", "utf8");
+  const statePath = join(root, "automation", ".cache", "state.json"); await mkdir(join(root, "automation", ".cache"), { recursive: true });
+  await writeFile(statePath, JSON.stringify({ stories: { "1": { issueNumber: 1, branch: "agent/issue-1", status: "IMPLEMENTING", updatedAt: new Date().toISOString() } } }), "utf8");
+  const controller = new LocalController(new AgentPersistence(join(root, ".agent")), { backlogRoot: backlog, orchestratorStatePath: statePath });
+  const story = (await controller.listStories())[0]; const project = await controller.project(); const runs = await controller.runs();
+  assert.equal(story.executionStatus, "ACTIVE"); assert.equal(story.agentStatus, "IMPLEMENTING"); assert.equal(story.branch, "agent/issue-1"); assert.equal(project.counts.active, 1); assert.equal(runs[0].storyId, "US-01"); assert.equal(runs[0].phase, "IMPLEMENTING");
+});
