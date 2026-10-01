@@ -58,6 +58,16 @@ test("reconciles a missing GitHub issue link before execution after a restart", 
   assert.equal(run.status, "ACTIVE"); assert.equal(observations, 1); assert.equal(execution.contexts[0].story.githubIssueNumber, 18);
 });
 
+test("materializes and resumes a blocked external orchestrator run after a restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-external-resume-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
+  await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
+  await writeFile(join(backlog, "US-001.md"), story("US-001", 1, "none", "NOT_STARTED", 18), "utf8");
+  const statePath = join(root, "automation", ".cache", "state.json"); await mkdir(join(root, "automation", ".cache"), { recursive: true }); await writeFile(statePath, JSON.stringify({ stories: { "18": { issueNumber: 18, branch: "agent/issue-18", status: "NEEDS_HUMAN", reason: "reviewer requested a decision", updatedAt: new Date().toISOString() } } }), "utf8");
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const execution = new FakeExecution(); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution, orchestratorStatePath: statePath }); await controller.selectProject(target);
+  const external = (await controller.runs())[0]; assert.equal(external.runId, "external-issue-18"); assert.equal(external.status, "BLOCKED");
+  const resumed = await controller.control(external.runId, "resume"); assert.equal(resumed.status, "ACTIVE"); assert.equal(resumed.storyId, "US-001"); assert.equal(execution.contexts[0].story.githubIssueNumber, 18);
+});
+
 test("continues an automatic plan once a fake GitHub adapter confirms the human merge", async () => {
   const execution = new FakeExecution(); let merged = false;
   const githubAdapter: GithubSyncAdapter = { async observe() { return [{ storyId: "US-003", githubIssueNumber: 3, pullRequestNumber: 30, headSha: "sha-30", state: merged ? "MERGED" : "OPEN", checks: "PASS", checkedAt: new Date().toISOString() }]; } };

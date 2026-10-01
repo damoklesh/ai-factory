@@ -198,8 +198,11 @@ export class LocalController {
     } finally { this.startPending = false; }
   }
   async control(runId: string, action: "pause" | "stop" | "resume"): Promise<RunSnapshot> {
+    await this.ensureProjectContext();
+    await this.ensureStories();
+    await this.refreshOrchestratorState();
     await this.ensureRuns();
-    if (!this.activeRun) this.activeRun = this.runHistory.find((run) => run.runId === runId);
+    if (!this.activeRun) this.activeRun = this.runHistory.find((run) => run.runId === runId) || this.externalRuns().find((run) => run.runId === runId);
     if (!this.activeRun || this.activeRun.runId !== runId) throw new Error("RUN_NOT_FOUND");
     if (action === "pause" && this.activeRun.status === "ACTIVE") this.activeRun = { ...this.activeRun, status: "PAUSE_REQUESTED", pauseRequested: true, updatedAt: new Date().toISOString() };
     else if (action === "stop" && !["FINISHED", "STOPPED"].includes(this.activeRun.status)) this.activeRun = { ...this.activeRun, status: "STOP_REQUESTED", stopRequested: true, phase: "STOPPED", updatedAt: new Date().toISOString() };
@@ -318,7 +321,8 @@ export class LocalController {
     });
   }
   private externalRuns(): RunSnapshot[] {
-    return this.stories.filter((story) => story.agentStatus).map((story) => ({ schemaVersion: SCHEMA_VERSION, runId: `external-issue-${story.githubIssueNumber || story.storyId}`, storyId: story.storyId, status: story.executionStatus === "BLOCKED" ? "BLOCKED" : story.executionStatus === "FINISHED" ? "FINISHED" : "ACTIVE", phase: phaseForAgentStatus(story.agentStatus), startedAt: story.updatedAt, updatedAt: story.updatedAt, attempts: 1, maxStories: 1, autoMerge: false, validationStatus: story.validationStatus, effectiveConfigRevision: this.configRevision, interruptionReason: story.agentReason })) as RunSnapshot[];
+    const persisted = new Set(this.runHistory.map((run) => run.runId));
+    return this.stories.filter((story) => story.agentStatus).map((story) => ({ schemaVersion: SCHEMA_VERSION, runId: `external-issue-${story.githubIssueNumber || story.storyId}`, storyId: story.storyId, status: story.executionStatus === "BLOCKED" ? "BLOCKED" : story.executionStatus === "FINISHED" ? "FINISHED" : "ACTIVE", phase: phaseForAgentStatus(story.agentStatus), startedAt: story.updatedAt, updatedAt: story.updatedAt, attempts: 1, maxStories: 1, autoMerge: false, validationStatus: story.validationStatus, effectiveConfigRevision: this.configRevision, interruptionReason: story.agentReason } as RunSnapshot)).filter((run) => !persisted.has(run.runId));
   }
   private async ensureRuns(): Promise<void> {
     await this.ensureProjectContext();
