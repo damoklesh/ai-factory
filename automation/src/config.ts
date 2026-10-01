@@ -13,6 +13,8 @@ const defaults: Omit<OrchestrationConfig, "owner" | "repo"> = {
   developerReasoning: "xhigh",
   reviewerModel: "terra",
   reviewerReasoning: "high",
+  developerPrompt: "Keep changes small and focused.",
+  reviewerPrompt: "Review the current commit and report evidence.",
   validationCommands: [],
   smokeCommands: [],
   requiredChecks: [],

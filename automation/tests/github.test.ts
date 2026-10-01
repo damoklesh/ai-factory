@@ -76,6 +76,26 @@ test("falls back to an auditable PR conversation comment when native review is r
   }
 });
 
+test("does not treat ordinary REST review comments as unresolved blockers", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/pulls/35/comments")) return Response.json([
+      { id: 1, body: "Consider a clearer name", commit_id: "sha-35" },
+      { id: 2, body: "[blocking] This must be corrected", commit_id: "sha-35" },
+    ]);
+    return new Response(null, { status: 204 });
+  };
+  try {
+    const client = new RestGitHubClient("owner", "repo", "secret");
+    const result = await client.getReviewThreads(35, "sha-35");
+    assert.equal(result.available, true);
+    assert.deepEqual(result.threads.map((thread) => ({ id: thread.id, blocking: thread.blocking, resolved: thread.resolved })), [{ id: "2", blocking: true, resolved: false }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("uses the latest Actions attempt and accepts GitHub display names", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {

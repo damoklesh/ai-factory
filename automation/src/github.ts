@@ -131,9 +131,13 @@ export class RestGitHubClient implements GitHubClient {
   async getReviewThreads(number: number, headSha: string): Promise<{ available: boolean; threads: ReviewThread[]; reason?: string }> {
     const comments = await this.request<Array<{ id: number; body?: string; path?: string; line?: number | null; commit_id?: string; resolved?: boolean; blocking?: boolean }>>(this.path(`/pulls/${number}/comments`));
     const relevant = comments.filter((comment) => !comment.commit_id || comment.commit_id === headSha);
-    const unknownResolution = relevant.some((comment) => typeof comment.resolved !== "boolean");
-    if (unknownResolution && relevant.length) return { available: false, threads: [], reason: "GitHub review-thread resolution is unavailable" };
-    return { available: true, threads: relevant.map((comment) => ({ id: String(comment.id), headSha: comment.commit_id || headSha, blocking: comment.blocking === true || /^\s*\[blocking\]/i.test(comment.body || ""), resolved: comment.resolved === true, body: comment.body, file: comment.path, line: comment.line || undefined })) };
+    // The REST pull-request comments endpoint deliberately does not expose a
+    // thread-resolution field. Treating every ordinary comment as an
+    // unresolvable blocker made same-token reviewer fallback impossible. Only
+    // explicitly marked blockers participate in the merge gate; the reviewer
+    // decision itself remains the authority for normal findings.
+    const blocking = relevant.filter((comment) => comment.blocking === true || /^\s*\[blocking\]/i.test(comment.body || ""));
+    return { available: true, threads: blocking.map((comment) => ({ id: String(comment.id), headSha: comment.commit_id || headSha, blocking: true, resolved: comment.resolved === true, body: comment.body, file: comment.path, line: comment.line || undefined })) };
   }
 
   async setIssueLabels(issueNumber: number, labels: string[]): Promise<void> { await this.request(this.path(`/issues/${issueNumber}/labels`), { method: "PUT", body: JSON.stringify({ labels }) }); }
