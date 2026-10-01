@@ -1,3 +1,5 @@
+import { access } from "node:fs/promises";
+import { join } from "node:path";
 import type { CheckRun } from "./types.js";
 import { evaluateRequiredChecks } from "./checks.js";
 import { runShellCommand } from "./processes.js";
@@ -19,8 +21,33 @@ export async function runValidationPlan(validationCommands: string[], smokeComma
 
 export function validationsPassed(results: VerificationResult[]): boolean { return results.every((result) => result.passed); }
 
+/** Return the deterministic dependency bootstrap command for a clean worktree. */
+export async function dependencyInstallCommand(cwd: string): Promise<string | undefined> {
+  try { await access(join(cwd, "node_modules")); return undefined; } catch { /* clean worktree */ }
+  for (const [file, command] of [
+    ["package-lock.json", "npm ci"],
+    ["npm-shrinkwrap.json", "npm ci"],
+    ["pnpm-lock.yaml", "pnpm install --frozen-lockfile"],
+    ["yarn.lock", "yarn install --frozen-lockfile"],
+    ["bun.lockb", "bun install --frozen-lockfile"],
+    ["bun.lock", "bun install --frozen-lockfile"],
+    ["package.json", "npm install"],
+  ] as const) {
+    try { await access(join(cwd, file)); return command; } catch { /* try the next supported manifest */ }
+  }
+  return undefined;
+}
+
+export async function installDependencies(cwd: string, command: string, timeoutMs: number): Promise<void> {
+  const result = await runShellCommand(command, cwd, timeoutMs);
+  if (result.code !== 0 || result.timedOut) throw new Error(`dependency installation failed (${command}): ${`${result.stdout}${result.stderr}`.trim().slice(-4_000) || "no output"}`);
+}
+
 export async function waitForRequiredChecks(client: GitHubClient, headSha: string, requiredChecks: string[], timeoutMs: number, pollMs = 5_000): Promise<{ checks: CheckRun[]; decision: "PASS" | "FAIL" }> {
-  if (requiredChecks.length === 0) return { checks: [], decision: "FAIL" };
+  // Bootstrap projects may not have a GitHub Actions workflow yet. Let the
+  // reviewer inspect the PR in that mode, while evaluateMergeGate() keeps the
+  // PR in READY_FOR_MERGE and prevents both manual and automatic merging.
+  if (requiredChecks.length === 0) return { checks: [], decision: "PASS" };
   const deadline = Date.now() + timeoutMs;
   let checks: CheckRun[] = [];
   while (Date.now() <= deadline) {

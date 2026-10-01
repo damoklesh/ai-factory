@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, resolveModelId } from "../src/config.js";
 import { ensureTargetRepository } from "../src/git.js";
 import { parseArgs } from "../src/orchestrator.js";
 
@@ -18,6 +18,12 @@ test("normalizes target repository configuration and keeps legacy owner/repo sup
     assert.equal(target.baseBranch, "develop");
     assert.equal(target.targetRepository, "acme/revenue");
     assert.equal(target.targetBacklogPath, "backlog");
+    assert.equal(target.modelVersion, "gpt-5.6");
+    assert.equal(target.maxValidationAttempts, 3);
+    assert.equal(target.developerModel, "luna");
+    assert.equal(target.developerReasoning, "xhigh");
+    assert.equal(target.reviewerModel, "terra");
+    assert.equal(target.reviewerReasoning, "high");
 
     const legacyConfig = join(directory, "legacy.json");
     await writeFile(legacyConfig, JSON.stringify({ owner: "acme", repo: "legacy", baseBranch: "main" }));
@@ -25,6 +31,27 @@ test("normalizes target repository configuration and keeps legacy owner/repo sup
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("loads separate agent models and reasoning defaults", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-factory-agent-config-"));
+  const configPath = join(directory, "config.json");
+  await writeFile(configPath, JSON.stringify({ targetRepository: "acme/revenue", developerModel: "terra", developerReasoning: "high", reviewerModel: "luna", reviewerReasoning: "low" }));
+  const config = loadConfig(configPath);
+  assert.equal(config.developerModel, "terra");
+  assert.equal(config.developerReasoning, "high");
+  assert.equal(config.reviewerModel, "luna");
+  assert.equal(config.reviewerReasoning, "low");
+  assert.equal(config.modelVersion, "gpt-5.6");
+  await writeFile(configPath, JSON.stringify({ targetRepository: "acme/revenue", modelVersion: "5.7", developerModel: "luna", reviewerModel: "terra" }));
+  assert.equal(loadConfig(configPath).modelVersion, "gpt-5.7");
+  await writeFile(configPath, JSON.stringify({ targetRepository: "acme/revenue", reviewerModel: "mars" }));
+  assert.throws(() => loadConfig(configPath), /reviewerModel must be luna, sol, or terra/);
+});
+
+test("resolves the configured model version and family to a full Codex model ID", () => {
+  assert.equal(resolveModelId("gpt-5.6", "luna"), "gpt-5.6-luna");
+  assert.equal(resolveModelId("5.6", "terra"), "gpt-5.6-terra");
 });
 
 test("rejects a target workspace inside the control repository", async () => {

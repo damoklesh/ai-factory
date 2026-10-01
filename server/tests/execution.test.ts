@@ -46,6 +46,52 @@ test("honors explicit selection and dependency gates", async () => {
   await assert.rejects(() => controller.start({ maxStories: 1, autoMerge: true }), /AUTO_MERGE_DISABLED/);
 });
 
+test("reconciles a missing GitHub issue link before execution after a restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-restart-sync-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
+  await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
+  await writeFile(join(backlog, "US-001.md"), story("US-001", 1).replace("githubIssueNumber: 1\n", ""), "utf8");
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); await store.select(target);
+  let observations = 0; const githubAdapter: GithubSyncAdapter = { async observe() { observations += 1; return [{ storyId: "US-001", githubIssueNumber: 18, state: "OPEN", checks: "UNKNOWN", checkedAt: new Date().toISOString() }]; } };
+  const execution = new FakeExecution(); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution, githubAdapter }); await controller.selectProject(target);
+  await controller.listStories();
+  const run = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "selected", storyId: "US-001" });
+  assert.equal(run.status, "ACTIVE"); assert.equal(observations, 1); assert.equal(execution.contexts[0].story.githubIssueNumber, 18);
+});
+
+test("materializes and resumes a blocked external orchestrator run after a restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-external-resume-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
+  await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
+  await writeFile(join(backlog, "US-001.md"), story("US-001", 1, "none", "NOT_STARTED", 18), "utf8");
+  const statePath = join(root, "automation", ".cache", "state.json"); await mkdir(join(root, "automation", ".cache"), { recursive: true }); await writeFile(statePath, JSON.stringify({ stories: { "18": { issueNumber: 18, branch: "agent/issue-18", status: "NEEDS_HUMAN", reason: "reviewer requested a decision", updatedAt: new Date().toISOString() } } }), "utf8");
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const execution = new FakeExecution(); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution, orchestratorStatePath: statePath }); await controller.selectProject(target);
+  const external = (await controller.runs())[0]; assert.equal(external.runId, "external-issue-18"); assert.equal(external.status, "BLOCKED");
+  const instruction = await controller.addInstruction(external.runId, { content: "Continue from the current PR", expectedRunStatus: "BLOCKED", idempotencyKey: "external-resume" }); assert.equal(instruction.status, "PENDING_NEXT_INVOCATION");
+  const resumed = await controller.control(external.runId, "resume"); assert.equal(resumed.status, "ACTIVE"); assert.equal(resumed.storyId, "US-001"); assert.equal(execution.contexts[0].story.githubIssueNumber, 18); assert.deepEqual(execution.contexts[0].instructions, ["Continue from the current PR"]);
+});
+
+test("makes an interrupted PR stage resumable but keeps human merge pending outside the agent loop", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-pr-recovery-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
+  await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
+  await writeFile(join(backlog, "US-001.md"), story("US-001", 1, "none", "NOT_STARTED", 18), "utf8");
+  const statePath = join(root, "automation", ".cache", "state.json"); await mkdir(join(root, "automation", ".cache"), { recursive: true });
+  const writeState = async (status: string) => writeFile(statePath, JSON.stringify({ stories: { "18": { issueNumber: 18, branch: "agent/issue-18", status, pullRequestNumber: 35, updatedAt: new Date().toISOString() } } }), "utf8");
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: new FakeExecution(), orchestratorStatePath: statePath }); await controller.selectProject(target);
+  await writeState("PR_OPEN"); const resumable = (await controller.runs())[0]; assert.equal(resumable.status, "BLOCKED"); assert.notEqual(resumable.phase, "WAITING");
+  await writeState("MERGE_PENDING_APPROVAL"); const awaitingMerge = (await controller.runs())[0]; assert.equal(awaitingMerge.status, "BLOCKED"); assert.equal(awaitingMerge.phase, "WAITING"); assert.equal(awaitingMerge.activity, "WAITING_FOR_INPUT");
+});
+
+test("exposes Resume when a cancelled local run left the external story in an active stage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-stale-external-run-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
+  await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
+  await writeFile(join(backlog, "US-001.md"), story("US-001", 1, "none", "NOT_STARTED", 18), "utf8");
+  const statePath = join(root, "automation", ".cache", "state.json"); await mkdir(join(root, "automation", ".cache"), { recursive: true });
+  const stateUpdatedAt = new Date().toISOString(); await writeFile(statePath, JSON.stringify({ stories: { "18": { issueNumber: 18, branch: "agent/issue-18", status: "FIXING", processStatus: "RUNNING", reason: "validation failed", updatedAt: stateUpdatedAt } } }), "utf8");
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const execution = new FakeExecution(); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution, orchestratorStatePath: statePath }); await controller.selectProject(target);
+  const started = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "selected", storyId: "US-001" }); execution.finish(0, { status: "CANCELLED", summary: "Orchestrator cancelled by user", exitCode: null });
+  for (let attempt = 0; attempt < 20 && !(await controller.runs()).some((run) => run.runId === started.runId && run.status === "CANCELLED"); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  const external = (await controller.runs()).find((run) => run.runId === "external-issue-18"); assert.equal(external?.status, "BLOCKED"); assert.match(external?.interruptionReason || "", /cancelled/i);
+});
+
 test("continues an automatic plan once a fake GitHub adapter confirms the human merge", async () => {
   const execution = new FakeExecution(); let merged = false;
   const githubAdapter: GithubSyncAdapter = { async observe() { return [{ storyId: "US-003", githubIssueNumber: 3, pullRequestNumber: 30, headSha: "sha-30", state: merged ? "MERGED" : "OPEN", checks: "PASS", checkedAt: new Date().toISOString() }]; } };
@@ -109,11 +155,15 @@ test("spawns the trusted automation entrypoint with explicit target, story, run 
   await writeFile(join(scriptDir, "orchestrator.js"), "console.log(JSON.stringify({aiFactoryEvent:true,source:'developer',phase:'IMPLEMENTING',level:'INFO',message:'fake developer running',activity:'RUNNING'})); setTimeout(() => console.log('fake orchestrator done'), 200);\n", "utf8"); await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
   const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const project = await store.select(target); const output: string[] = []; const service = new ChildProcessExecutionService((_runId, _stream, chunk) => output.push(chunk)); const parsedStory = parseMarkdown("US-007.md", story("US-007", 1, "none", "NOT_STARTED", 7));
   let liveEvent!: (value: string) => void; const eventSeen = new Promise<string>((resolve) => { liveEvent = resolve; });
-  const context: ExecutionContext = { runId: "run-007", story: parsedStory, project, controlRoot: await realpath(control), stateRoot, configRevision: "config-1", config: { owner: "acme", repo: "target", baseBranch: project.baseBranch || "master", validationCommands: ["npm test"], requiredChecks: [], maxStories: 1, maxFixCycles: 1, autoMerge: false, stateFile: "state.json" }, onEvent: (event) => liveEvent(event.message) };
+  const context: ExecutionContext = { runId: "run-007", story: parsedStory, project, controlRoot: await realpath(control), stateRoot, configRevision: "config-1", config: { owner: "acme", repo: "target", baseBranch: project.baseBranch || "master", modelVersion: "gpt-5.6", developerModel: "sol", developerReasoning: "medium", reviewerModel: "terra", reviewerReasoning: "high", validationCommands: ["npm test"], requiredChecks: [], maxStories: 1, maxFixCycles: 1, maxValidationAttempts: 3, autoMerge: false, stateFile: "state.json" }, onEvent: (event) => liveEvent(event.message) };
   const handle = await service.start(context); assert.ok(handle.pid); await assert.rejects(() => service.start({ ...context, runId: "duplicate" }), /RUN_ALREADY_ACTIVE_FOR_PROJECT/); assert.equal(await eventSeen, "fake developer running"); const outcome = await handle.completion; assert.equal(outcome.status, "SUCCEEDED"); assert.match(output.join(""), /developer running/);
-  const runConfig = JSON.parse(await import("node:fs/promises").then(({ readFile }) => readFile(join(stateRoot, "run-run-007.config.json"), "utf8"))) as { targetWorkspace: string; autoMerge: boolean; selectedStoryId: string; runId: string };
+  const runConfig = JSON.parse(await import("node:fs/promises").then(({ readFile }) => readFile(join(stateRoot, "run-run-007.config.json"), "utf8"))) as { targetWorkspace: string; autoMerge: boolean; selectedStoryId: string; runId: string; modelVersion: string; developerModel: string; developerReasoning: string; reviewerModel: string; reviewerReasoning: string; maxValidationAttempts: number };
   assert.equal(runConfig.targetWorkspace, project.targetPath); assert.equal(runConfig.autoMerge, false); assert.equal(runConfig.selectedStoryId, "US-007"); assert.equal(runConfig.runId, "run-007");
+  assert.equal(runConfig.modelVersion, "gpt-5.6"); assert.equal(runConfig.developerModel, "sol"); assert.equal(runConfig.developerReasoning, "medium"); assert.equal(runConfig.reviewerModel, "terra"); assert.equal(runConfig.reviewerReasoning, "high"); assert.equal(runConfig.maxValidationAttempts, 3);
   const storyContract = JSON.parse(await import("node:fs/promises").then(({ readFile }) => readFile(join(stateRoot, "run-run-007.story.json"), "utf8"))) as { objective: string; dependencies: number[] }; assert.match(storyContract.objective, /US-007/); assert.deepEqual(storyContract.dependencies, []);
+  await writeFile(join(scriptDir, "orchestrator.js"), "console.log(process.argv.includes('--resume') ? 'resume flag present' : 'resume flag missing');\n", "utf8"); const resumedHandle = await service.start({ ...context, runId: "run-resume-flag", resume: true }); const resumedOutcome = await resumedHandle.completion; assert.equal(resumedOutcome.status, "SUCCEEDED"); assert.match(resumedOutcome.summary, /resume flag present/);
+  await writeFile(join(scriptDir, "orchestrator.js"), "console.log(JSON.stringify({aiFactoryEvent:true,source:'orchestrator',phase:'WAITING',level:'WARN',message:'review publication failed',activity:'WAITING_FOR_INPUT',outcome:'REVIEW_FAILED'})); console.log('REVIEW_FAILED #7: publication failed'); console.error('(node:123) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, only concatenated.'); console.error('(Use `node --trace-deprecation ...` to show where the warning was created)');\n", "utf8");
+  const reviewFailure = await service.start({ ...context, runId: "run-review-failed" }); const reviewFailureOutcome = await reviewFailure.completion; assert.equal(reviewFailureOutcome.status, "FAILED"); assert.match(reviewFailureOutcome.summary, /REVIEW_FAILED #7/); assert.doesNotMatch(reviewFailureOutcome.summary, /trace-deprecation/);
   await writeFile(join(scriptDir, "orchestrator.js"), "console.log(JSON.stringify({aiFactoryEvent:true,source:'orchestrator',phase:'WAITING',level:'WARN',message:'authentication required',activity:'WAITING_FOR_INPUT',outcome:'PAUSED_AUTH'}));\n", "utf8");
   const blocked = await service.start({ ...context, runId: "run-auth" }); assert.equal((await blocked.completion).status, "BLOCKED");
   await writeFile(join(scriptDir, "orchestrator.js"), "setTimeout(() => console.log('too late'), 5000);\n", "utf8");

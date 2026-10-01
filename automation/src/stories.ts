@@ -3,6 +3,7 @@ import type { Issue, StoryContract } from "./types.js";
 const headings: Record<string, keyof StoryContract> = {
   objetivo: "objective",
   objective: "objective",
+  "user story": "objective",
   "criterios de aceptación": "acceptanceCriteria",
   "criterios de aceptacion": "acceptanceCriteria",
   "acceptance criteria": "acceptanceCriteria",
@@ -70,12 +71,12 @@ export interface StorySelection {
 }
 
 /** Returns a stable, user-facing refusal reason for an explicitly requested story. */
-export function storyEligibility(issue: Issue | undefined, issues: Issue[], completed: Set<number>): string | undefined {
+export function storyEligibility(issue: Issue | undefined, issues: Issue[], completed: Set<number>, allowBlocked = false): string | undefined {
   if (!issue) return "story not found";
   if (issue.state !== "open") return `story #${issue.number} is not open (${issue.state})`;
   if (completed.has(issue.number) || issue.labels.includes("agent:done")) return `story #${issue.number} is already merged/done`;
-  if (issue.labels.includes("agent:blocked")) return `story #${issue.number} is blocked (agent:blocked)`;
-  if (!issue.labels.includes("agent:ready")) return `story #${issue.number} is not marked agent:ready`;
+  if (issue.labels.includes("agent:blocked") && !allowBlocked) return `story #${issue.number} is blocked (agent:blocked)`;
+  if (!issue.labels.includes("agent:ready") && !allowBlocked) return `story #${issue.number} is not marked agent:ready`;
   let contract: StoryContract;
   try { contract = parseStory(issue); } catch (error) { return error instanceof Error ? error.message : String(error); }
   const byNumber = new Map(issues.map((item) => [item.number, item]));

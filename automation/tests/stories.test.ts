@@ -1,19 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseStory, selectNextStory, storyEligibility, validateDependencyGraph } from "../src/stories.js";
-import { emptyState, canStartFix, reconcilePullRequest, transition } from "../src/state.js";
+import { emptyState, canStartFix, nextFixCycle, reconcilePullRequest, shouldRunDeveloper, transition } from "../src/state.js";
 import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { evaluateRequiredChecks } from "../src/checks.js";
 import { buildPullRequestBody, replaceAgentLabel } from "../src/github.js";
-import { parseArgs } from "../src/orchestrator.js";
+import { feedbackForResume, parseArgs, selectExplicitStory } from "../src/orchestrator.js";
 import { evaluateMergeGate, mergeReviewedPullRequest } from "../src/merge.js";
 import { waitForRequiredChecks } from "../src/verify.js";
 import type { GitHubClient } from "../src/github.js";
-import type { Issue } from "../src/types.js";
+import type { Issue, StoryStatus } from "../src/types.js";
 
 const issue = (number: number, priority: number, dependencies = "None"): Issue => ({
   number, title: `US ${number}`, state: "open", labels: ["agent:ready"], body: `## Objective\nAs a user I want story ${number}.\n## Acceptance criteria\n- It works\n- It handles errors\n## Scope\nController\n## Dependencies\n${dependencies}\n## Priority\n${priority}\n## Validation\nnpm test`,
 });
+const stateStory = (status: StoryStatus) => ({ issueNumber: 1, branch: "agent/issue-1", fixCycles: 0, status, updatedAt: new Date().toISOString() });
 
 test("parses the issue contract and orders eligible stories", () => {
   const result = parseStory(issue(2, 1, "#1, #3"));
@@ -26,6 +27,13 @@ test("parses headings emitted by the GitHub issue form", () => {
   const formIssue = issue(3, 1);
   formIssue.body = formIssue.body.replaceAll("## ", "### ");
   assert.equal(parseStory(formIssue).priority, 1);
+});
+
+test("accepts the documented User Story heading as the objective", () => {
+  const standard = issue(4, 1);
+  standard.body = standard.body.replace("## Objective", "## User Story");
+  assert.equal(parseStory(standard).objective, "As a user I want story 4.");
+  assert.equal(selectNextStory([standard], new Set())?.issue.number, 4);
 });
 
 test("blocks missing and cyclic dependencies", () => {
@@ -50,6 +58,13 @@ test("reconciles an existing stable PR and enforces fix limits", () => {
   assert.equal(canStartFix(reconciled!, 2), false);
 });
 
+test("does not consume review fix cycles for local validation retries", () => {
+  assert.equal(nextFixCycle(0, "LOCAL_VALIDATION"), 0);
+  assert.equal(nextFixCycle(2, "LOCAL_VALIDATION"), 2);
+  assert.equal(nextFixCycle(0, "CI_FAILURE"), 1);
+  assert.equal(nextFixCycle(2, "REVIEW_CHANGES_REQUESTED"), 3);
+});
+
 test("keeps the correction boundary explicit across a restart", () => {
   const state = emptyState();
   transition(state, 8, "FIXING", { fixCycles: 3, reason: "CI failed" });
@@ -57,6 +72,26 @@ test("keeps the correction boundary explicit across a restart", () => {
   assert.equal(restarted.fixCycles, 3);
   assert.equal(canStartFix(restarted, 3), false);
   assert.equal(canStartFix(restarted, 4), true);
+});
+
+test("resumes an existing PR at review without another developer cycle", () => {
+  assert.equal(shouldRunDeveloper(false), true);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("PR_OPEN") }), false);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("FAILED_INFRA") }), false);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("REVIEW_CHANGES_REQUESTED") }), true);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("FIXING"), fixCause: "LOCAL_VALIDATION" }), false);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("FIXING"), fixCause: "REVIEW_CHANGES_REQUESTED" }), true);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix this"] }, false), false);
+  assert.equal(shouldRunDeveloper(true, { ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix this"] }, true), true);
+  assert.match(feedbackForResume({ ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix README", "fix E2E port"] }, true), /fix README/);
+  assert.equal(feedbackForResume({ ...stateStory("NEEDS_HUMAN"), reviewFindings: ["fix this"] }, false), "");
+});
+
+test("allows only an explicit resume to reopen a blocked story", () => {
+  const blocked = { ...issue(18, 1), title: "[US-001] Create the project scaffold", labels: ["agent:blocked"] };
+  assert.throws(() => selectExplicitStory([blocked], new Set(), "US-001"), /blocked/);
+  assert.equal(selectExplicitStory([blocked], new Set(), "US-001", undefined, true).issue.number, 18);
+  assert.equal(parseArgs(["--story-id", "US-001", "--resume"]).resume, true);
 });
 
 test("rejects malformed agent results", () => {
@@ -94,10 +129,20 @@ test("waits for current-SHA CI and blocks a changed PR head at merge", async () 
   await assert.rejects(() => mergeReviewedPullRequest(client, 12, "reviewed"), /stale/);
 });
 
+test("allows reviewer bootstrap mode without querying GitHub checks", async () => {
+  let queried = false;
+  const client = { async getChecks() { queried = true; return []; } } as unknown as GitHubClient;
+  const result = await waitForRequiredChecks(client, "sha", [], 1, 0);
+  assert.equal(result.decision, "PASS");
+  assert.deepEqual(result.checks, []);
+  assert.equal(queried, false);
+});
+
 test("merge gate requires current review, green current-SHA checks and no blockers", () => {
   const checks = [{ name: "CI", status: "completed" as const, conclusion: "success", headSha: "sha" }];
   const noThreads = { available: true, threads: [] };
   assert.equal(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: noThreads }).ready, true);
+  assert.equal(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [{ name: "CI / CI Gate (pull_request)", status: "completed", conclusion: "success", headSha: "sha" }], requiredChecks: ["CI Gate"], reviewThreads: noThreads }).ready, true);
   assert.match(evaluateMergeGate({ currentSha: "new", reviewedSha: "old", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: noThreads }).reason || "", /stale/);
   assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks: [], requiredChecks: ["CI"], reviewThreads: noThreads }).reason || "", /missing/);
   assert.match(evaluateMergeGate({ currentSha: "sha", reviewedSha: "sha", reviewDecision: "PASS", checks, requiredChecks: ["CI"], reviewThreads: { available: true, threads: [{ id: "1", headSha: "sha", blocking: true, resolved: false }] } }).reason || "", /unresolved/);

@@ -95,7 +95,7 @@ Al seleccionar proyecto, el servidor debe mostrar ruta absoluta, repositorio rem
 4. Usuario elige una historia explícita o `Auto`. La ejecución tiene máximo de historias configurable (por defecto 1), con auto-merge apagado.
 5. Controller reserva lock por proyecto, valida que no haya otro run vivo, configura directorio de trabajo y crea/recupera worktree y branch estables.
 6. Orquestador emite `run.started`, fase y eventos de proceso; Node persiste cada evento y lo envía por SSE. UI puede recuperar estado/logs por API si pierde la conexión.
-7. Codex trabaja en el worktree del proyecto destino. El motor ejecuta las validaciones detectadas/configuradas, revisa diff, genera PR si corresponde y espera checks/decisión.
+7. Codex trabaja en el worktree del proyecto destino. El motor ejecuta las validaciones detectadas/configuradas; los reintentos locales del Developer no consumen el presupuesto de correcciones. Tras crear la PR, los fallos de CI y solicitudes de cambios del Reviewer consumen el presupuesto limitado, y el motor espera checks/decisión.
 8. Si falta decisión/credencial/contexto, el estado cambia a `BLOCKED`/`NEEDS_HUMAN` con motivo accionable. La persona puede aprobar/rechazar/deferir, editar la historia con previsualización de diff o añadir instrucción acotada para la próxima invocación.
 9. Run termina como `SUCCEEDED`, `FAILED`, `BLOCKED`, `CANCELLED` o `INTERRUPTED`. UI informa historia, commit/PR/sha, validaciones y siguiente acción.
 10. Al reiniciar servidor/UI, se recuperan snapshots. Cualquier proceso cuya vida no pueda verificarse queda `INTERRUPTED` hasta reconciliar, nunca falso `ACTIVE`.
@@ -112,6 +112,10 @@ Configuración por proyecto (ejemplo conceptual; no obliga a persistir este JSON
   "baseBranch": "main",
   "backlogPath": "backlog",
   "validationCommands": [],
+  "developerModel": "luna",
+  "developerReasoning": "xhigh",
+  "reviewerModel": "terra",
+  "reviewerReasoning": "high",
   "autoMerge": false,
   "maxStoriesPerRun": 1
 }
@@ -189,7 +193,7 @@ Validation rules: require `storyId`, `title`, `priority`, the `User Story`, `Sco
 | **Backlog** | Lista de historias por prioridad/estado; selección múltiple solo para sync; detalle con user story, criterios, dependencias, prioridad, Issue/PR/commit links y diferencias local/remoto. Acciones: editar con preview, sync Issue, refresh estado, Run selected, Run next eligible. Estados distintos: local, sync pendiente, conflict, ready, blocked, active, validation failed, PR open, merged. |
 | **Executions** | Historial y detalle del run activo: historia, selección manual/auto, fase/timeline con marcas de tiempo, actividad reciente, comandos y salida permitida, archivos/diff resumido, validaciones, commit, PR y checks. Filtros/niveles de log; recarga paginada. Start debe devolver `runId` solo cuando la tarea quedó aceptada; mostrar fase de arranque si no se lanzó aún. |
 | **Human validation** | Bandeja de bloqueos/aprobaciones con motivo, evidencia, revisión del spec y SHA esperado. Approve/reject/defer con razón donde aplique; añadir instrucción para próxima invocación; enlace a editar spec (preview primero). Aprobación de merge ligada al mismo SHA y spec revision que se revisaron; invalidar si cambian. |
-| **Configuration** | Proyecto, GitHub `owner/repo`, branch base, ruta backlog, selección/ejecución, modelo/timeout, comandos de validación, checks y política de merge. Muestra procedencia de cada parámetro, validación, diff de cambios, guardar/cancelar. Tokens fuera del formulario salvo estado configurado/no configurado. |
+| **Configuration** | Proyecto, GitHub `owner/repo`, branch base, ruta backlog, selección/ejecución, modelo y nivel de razonamiento independientes para Developer y Reviewer, timeout, comandos de validación, checks y política de merge. Muestra procedencia de cada parámetro, validación, diff de cambios, guardar/cancelar. Tokens fuera del formulario salvo estado configurado/no configurado. |
 
 ### Logs y visibilidad
 

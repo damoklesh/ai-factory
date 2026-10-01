@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp } from "node:fs/promises";
+import { access, mkdir, mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import type { OrchestrationConfig } from "./types.js";
@@ -15,7 +15,7 @@ async function git(cwd: string, args: string[], timeoutMs = 120_000, options: Gi
 
 export async function gitSha(cwd: string): Promise<string> { return git(cwd, ["rev-parse", "HEAD"]); }
 export async function gitRoot(cwd: string): Promise<string> { return resolve(await git(cwd, ["rev-parse", "--show-toplevel"])); }
-export async function gitStatus(cwd: string): Promise<string> { return git(cwd, ["status", "--porcelain"]); }
+export async function gitStatus(cwd: string, options: GitOptions = {}): Promise<string> { return git(cwd, ["status", "--porcelain"], 120_000, options); }
 export async function gitDiff(cwd: string, baseBranch: string): Promise<string> { return git(cwd, ["diff", `${baseBranch}...HEAD`]); }
 export async function inspectChanges(cwd: string, options: GitOptions & { allowedPaths?: string[] } = {}): Promise<string[]> {
   const sources = await Promise.all([
@@ -36,28 +36,67 @@ export async function inspectChanges(cwd: string, options: GitOptions & { allowe
   return files;
 }
 export async function commitAndPush(cwd: string, branch: string, message: string, options: GitOptions & { allowedPaths?: string[] } = {}): Promise<{ sha: string; changed: boolean; files: string[] }> {
+  const commit = await commitLocal(cwd, message, options);
+  if (commit.changed) await pushBranch(cwd, branch, options);
+  return commit;
+}
+
+/** Create a visible local checkpoint without publishing it to GitHub. */
+export async function commitLocal(cwd: string, message: string, options: GitOptions & { allowedPaths?: string[] } = {}): Promise<{ sha: string; changed: boolean; files: string[] }> {
   const status = await git(cwd, ["status", "--porcelain"], 120_000, options);
   if (!status) return { sha: await gitSha(cwd), changed: false, files: [] };
   const files = await inspectChanges(cwd, options);
   if (!files.length) return { sha: await gitSha(cwd), changed: false, files: [] };
   await git(cwd, ["add", "--", ...files], 120_000, options);
   await git(cwd, ["commit", "-m", message], 120_000, options);
-  await git(cwd, ["push", "--set-upstream", "origin", branch], 120_000, options);
   return { sha: await gitSha(cwd), changed: true, files };
 }
 
-export interface Worktree { path: string; branch: string; }
+export async function pushBranch(cwd: string, branch: string, options: GitOptions = {}): Promise<void> {
+  await git(cwd, ["push", "--set-upstream", "origin", branch], 120_000, options);
+}
+
+/** Collapse local implementation/fixing checkpoints into one pre-PR commit. */
+export async function squashBranch(cwd: string, baseRef: string, message: string, options: GitOptions & { allowedPaths?: string[] } = {}): Promise<{ sha: string; changed: boolean; files: string[] }> {
+  const base = await git(cwd, ["rev-parse", baseRef], 120_000, options).catch(() => git(cwd, ["rev-parse", `origin/${baseRef}`], 120_000, options));
+  await git(cwd, ["reset", "--soft", base], 120_000, options);
+  return commitLocal(cwd, message, options);
+}
+
+export interface Worktree { path: string; branch: string; reused?: boolean; }
+
+async function findExistingWorktree(repoRoot: string, branch: string, options: GitOptions = {}): Promise<Worktree | undefined> {
+  const result = await runProcess("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
+  if (result.code !== 0) return undefined;
+  const blocks = result.stdout.split(/\r?\n\r?\n/).map((block) => block.split(/\r?\n/));
+  const ref = `branch refs/heads/${branch}`;
+  for (const lines of blocks) {
+    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length).trim();
+    if (path && lines.some((line) => line.trim() === ref)) {
+      try { await access(path); } catch { await runProcess("git", ["worktree", "prune"], { cwd: repoRoot, timeoutMs: 120_000, env: options.env }); continue; }
+      return { path: await realpath(path).catch(() => resolve(path)), branch, reused: true };
+    }
+  }
+  return undefined;
+}
 
 export async function createWorktree(repoRoot: string, baseRef: string, branch: string, options: GitOptions = {}): Promise<Worktree> {
+  const existing = await findExistingWorktree(repoRoot, branch, options);
+  if (existing) return existing;
   const path = await mkdtemp(join(tmpdir(), "ai-factory-"));
   try {
     // A resumed story may only exist on origin. Fetch the named branch without changing
     // the user's checkout, then prefer that exact branch over recreating from base.
     await runProcess("git", ["fetch", "origin", branch], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
+    // When a previous invocation published a commit, the local branch can be
+    // behind origin even though no worktree is currently registered. Fast
+    // forward only; never discard local commits or dirty work.
+    const ancestor = await runProcess("git", ["merge-base", "--is-ancestor", branch, `origin/${branch}`], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
+    if (ancestor.code === 0) await runProcess("git", ["branch", "--force", branch, `origin/${branch}`], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
     const existing = await runProcess("git", ["worktree", "add", path, branch], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
-    if (existing.code === 0) return { path, branch };
+    if (existing.code === 0) return { path: await realpath(path), branch };
     const remote = await runProcess("git", ["worktree", "add", "-b", branch, path, `origin/${branch}`], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
-    if (remote.code === 0) return { path, branch };
+    if (remote.code === 0) return { path: await realpath(path), branch };
     // The user's normal checkout usually has baseRef checked out already. A detached
     // worktree avoids trying to check out the same branch twice.
     const result = await runProcess("git", ["worktree", "add", "--detach", path, baseRef], { cwd: repoRoot, timeoutMs: 120_000, env: options.env });
@@ -65,7 +104,7 @@ export async function createWorktree(repoRoot: string, baseRef: string, branch: 
     if (remoteBase.code !== 0) throw new Error(`git worktree add failed: ${remoteBase.stderr.trim() || remoteBase.stdout.trim()}`);
     const branchResult = await runProcess("git", ["switch", "-c", branch], { cwd: path, timeoutMs: 120_000 });
     if (branchResult.code !== 0) throw new Error(`git switch failed: ${branchResult.stderr.trim() || branchResult.stdout.trim()}`);
-    return { path, branch };
+    return { path: await realpath(path), branch };
   } catch (error) {
     await runProcess("git", ["worktree", "remove", "--force", path], { cwd: repoRoot, timeoutMs: 120_000 });
     throw error;

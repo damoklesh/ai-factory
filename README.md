@@ -26,9 +26,9 @@ npm run dev     # build and serve on loopback
 npm run start   # production-style local start
 ```
 
-The local UI uses the same repository configuration as the automation controller. When `automation/config.json` and `AGENT_GH_TOKEN` (or the supported `GITHUB_TOKEN` fallback) are available, the backend reads GitHub Issues, Pull Requests, and check runs during sync. Credentials stay in the environment and are never returned by the UI. `autoMerge` remains disabled by default.
+The local UI uses the same repository configuration as the automation controller. When `automation/config.json` and `AGENT_GH_TOKEN` (or the supported `GITHUB_TOKEN` fallback) are available, the backend reads GitHub Issues, Pull Requests, and Actions workflow/job status during sync. Credentials stay in the environment and are never returned by the UI. `autoMerge` remains disabled by default.
 
-AI Factory is a local-first TypeScript automation controller for implementing small GitHub Issues with Codex CLI. It selects one eligible user story, gives an isolated worktree to a Developer Codex process, runs configured validation, opens or reuses a pull request, waits for required CI checks, asks a fresh Reviewer Codex process for a structured review, and optionally merges only when the reviewed commit SHA is still current.
+AI Factory is a local-first TypeScript automation controller for implementing small GitHub Issues with Codex CLI. It selects one eligible user story, gives an isolated worktree to a Developer Codex process, runs configured validation, opens or reuses a pull request, waits for required GitHub Actions jobs, asks a fresh Reviewer Codex process for a structured review, and optionally merges only when the reviewed commit SHA is still current.
 
 This repository contains the automation controller described by [`AI_Factory_V1_Plan.md`](AI_Factory_V1_Plan.md) plus the local supervision server and UI described by `Orquestrator UI.md`. The UI is local-first and uses files rather than a database.
 
@@ -51,7 +51,7 @@ GitHub Issue (agent:ready)
         v
 Trusted TypeScript orchestrator
   |       |          |          |
-  |       |          |          +--> GitHub REST API: labels, PRs, checks, comments, merge
+  |       |          |          +--> GitHub REST API: labels, PRs, Actions jobs, comments, merge
   |       |          +-------------> validation commands and CI polling
   |       +------------------------> Codex Developer / Reviewer child processes
   +--------------------------------> isolated Git worktree and persisted state
@@ -61,12 +61,12 @@ The intended production flow is:
 
 1. A manual GitHub Actions workflow runs the trusted controller from the base branch.
 2. The selector validates Issue contracts, dependencies, labels, and priority.
-3. The controller creates `agent/issue-<number>` in a temporary Git worktree.
+3. The controller creates (or reuses after an interruption) `agent/issue-<number>` in a local temporary Git worktree, so the in-progress branch can be inspected while the run is active.
 4. Codex Developer receives the Issue contract on stdin and returns schema-checked JSON.
-5. The controller runs configured validation, commits, pushes, and creates or reuses one PR.
-6. Required checks are polled for the exact PR head SHA.
+5. The Developer makes one initial implementation, creates a local checkpoint commit before validation, and only then enters bounded fixing attempts. Once validation passes, checkpoints are squashed into the reviewed commit before it is pushed and a PR is created or reused.
+6. Required GitHub Actions jobs are polled for the exact PR head SHA.
 7. A separate Codex Reviewer evaluates the diff and validation evidence.
-8. Review/CI failures use the bounded fix budget. `autoMerge=true` additionally rechecks the PR SHA immediately before merging.
+8. Local validation retries stay in the Developer pre-PR phase, are bounded by `maxValidationAttempts`, and do not consume `maxFixCycles`. Once a PR exists, CI failures and Reviewer change requests use the bounded fix budget. If `requiredChecks` is empty, bootstrap mode skips the CI wait so the Reviewer can inspect the PR, but the merge gate remains closed. `autoMerge=true` still cannot merge without configured required checks and a green current-SHA result.
 9. A successful merge closes the Issue and applies `agent:done`.
 
 GitHub-hosted CI is intentionally separate from the self-hosted orchestration runner. The same runner must not be the only machine waiting for its own CI job.
@@ -127,15 +127,19 @@ Copy-Item config.example.json config.json
 | `targetWorkspace` | Local checkout path, relative to the `ai-factory` repository root or absolute | `../workspaces/TARGET-REPOSITORY` |
 | `owner`, `repo`, `baseBranch` | Legacy aliases for the target repository and branch | supported for migration |
 | `runnerLabel` | Intended runner label | `ai-local`; currently also set in the workflow |
-| `model` | Optional Codex model override | empty |
+| `modelVersion` | Base GPT model version used to build the full Codex model IDs | `gpt-5.6` |
+| `model` | Legacy/global model fallback; use a full ID when retained | `gpt-5.6-sol` |
+| `developerModel` / `reviewerModel` | Model family selected per agent; resolved to `gpt-<version>-<family>` before invoking Codex | `luna`, `sol`, or `terra` |
+| `developerReasoning` / `reviewerReasoning` | Reasoning effort per agent | Developer `xhigh`; Reviewer `high` (also supports `low`/`medium`) |
 | `validationCommands` | Commands repeated by the controller in the worktree | project-specific, e.g. `npm test` |
 | `smokeCommands` | Project smoke commands | run after deterministic validation succeeds, with the same workflow timeout |
-| `requiredChecks` | Exact GitHub check names required for the PR SHA | project-specific, e.g. `automation` |
+| `requiredChecks` | Exact GitHub Actions job/check names required for the PR SHA; leave empty only for reviewer-only bootstrap mode | project-specific, e.g. `validate` |
 | `timeouts.codexMinutes` | Per Codex invocation timeout | `45` |
 | `timeouts.ciMinutes` | Required-check polling timeout | `20` |
 | `timeouts.workflowMinutes` | Local validation command timeout | `180` |
 | `maxStories` | Stories per run | `1` |
 | `maxFixCycles` | Maximum correction cycles per story | `3` |
+| `maxValidationAttempts` | Maximum local developer/test correction attempts before human intervention; does not consume reviewer fix cycles | `3` |
 | `autoMerge` | Allow the controller to merge after all gates | `false` |
 | `stateFile` | Recoverable local state cache | `.cache/state.json` |
 | `logDirectory` | Intended log directory | `logs` |
@@ -144,7 +148,7 @@ Copy-Item config.example.json config.json
 
 | Name / setting | Where it belongs | Required for |
 | --- | --- | --- |
-| `AGENT_GH_TOKEN` | GitHub Actions secret or runner environment | Target clone, Issues, PRs, pushes, and checks |
+| `AGENT_GH_TOKEN` | GitHub Actions secret or runner environment | Target clone, Issues, PRs, pushes, and Actions workflow/job status |
 | `GITHUB_TOKEN` | Native Actions token fallback | Supported fallback, but the fine-grained PAT is preferred |
 | Codex ChatGPT login | Local Codex profile of the runner user | Developer and Reviewer invocations |
 | `AI_FACTORY_CONFIG` | Runner environment variable | Config outside `automation/config.json` |
@@ -153,7 +157,7 @@ Copy-Item config.example.json config.json
 | `agent:ready`, `agent:running`, `agent:blocked`, `agent:done` | GitHub Issue labels | Visible state and selection |
 | `ai-local` | Self-hosted runner label | Workflow routing |
 
-The fine-grained PAT should be restricted to the target repository and granted only the required Contents read/write, Issues read/write, Pull requests read/write, Checks read, Actions read, and Metadata read permissions. Never put the PAT, Codex auth files, or runner registration token in this repository or in prompts. Rotate the PAT and set an expiry.
+The fine-grained PAT should be restricted to the target repository and granted only the required Contents read/write, Issues read/write, Pull requests read/write, Actions read, and Metadata read permissions. The orchestrator reads workflow runs and jobs through the Actions API; it does not require the unavailable Checks permission on a fine-grained PAT. Add Commit statuses read only if a future integration explicitly uses that API. Never put the PAT, Codex auth files, or runner registration token in this repository or in prompts. Rotate the PAT and set an expiry.
 
 The GitHub Actions workflow also needs repository settings that allow the selected workflow to run and permit the intended PR/Issue operations. Branch protection, required approvals, and merge rules can intentionally stop the controller; do not weaken them to force automation through.
 
@@ -170,7 +174,7 @@ npm run dev
 
 The backend automatically uses `automation/config.json`. To store the configuration elsewhere, set `AI_FACTORY_CONFIG` to its path. `AGENT_GH_TOKEN` is preferred; `GITHUB_TOKEN` is also accepted. Do not put either token in `config.json`, source code, or a committed `.env` file. After changing the repository or token, restart `npm run dev`.
 
-With GitHub configured, use `Sync GitHub` in the Summary view to refresh remote Issues, Pull Requests, and checks. Without a valid configuration/token, the UI remains usable locally and correctly reports `GitHub offline`.
+With GitHub configured, use `Sync GitHub` in the Summary view to refresh remote Issues, Pull Requests, and Actions job status. Without a valid configuration/token, the UI remains usable locally and correctly reports `GitHub offline`.
 
 From `automation/`:
 
@@ -366,7 +370,6 @@ Use these values:
    - **Contents: Read and write**
    - **Issues: Read and write**
    - **Pull requests: Read and write**
-   - **Checks: Read**
    - **Actions: Read**
 
 Generate the token and copy it immediately; GitHub does not show the full value again. If the repository belongs to an organization, an administrator may need to approve the token.

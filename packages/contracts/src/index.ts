@@ -196,10 +196,17 @@ export interface AppConfigView {
   targetBacklogPath?: string;
   targetWorkspace?: string;
   model?: string;
+  /** Base model family/version used to resolve role-specific Codex model IDs. */
+  modelVersion: string;
+  developerModel: "luna" | "sol" | "terra";
+  developerReasoning: "low" | "medium" | "high" | "xhigh";
+  reviewerModel: "luna" | "sol" | "terra";
+  reviewerReasoning: "low" | "medium" | "high" | "xhigh";
   validationCommands: string[];
   requiredChecks: string[];
   maxStories: number;
   maxFixCycles: number;
+  maxValidationAttempts: number;
   autoMerge: boolean;
   stateFile: string;
   developerPrompt?: string;
@@ -264,13 +271,17 @@ export function parseSpecUpdateRequest(value: unknown): SpecUpdateRequest {
 
 export function parseConfigUpdateRequest(value: unknown): ConfigUpdateRequest {
   if (!isRecord(value) || !isRecord(value.config) || typeof value.expectedRevision !== "string" || !value.expectedRevision || typeof value.idempotencyKey !== "string" || !value.idempotencyKey) throw new ContractValidationError("config", "config, expectedRevision, and idempotencyKey are required");
-  const config = value.config; const allowed = ["owner", "repo", "baseBranch", "controlRepository", "targetRepository", "targetBranch", "targetBacklogPath", "targetWorkspace", "model", "validationCommands", "requiredChecks", "maxStories", "maxFixCycles", "autoMerge", "stateFile", "developerPrompt", "reviewerPrompt"];
+  const config = value.config; const allowed = ["owner", "repo", "baseBranch", "controlRepository", "targetRepository", "targetBranch", "targetBacklogPath", "targetWorkspace", "model", "modelVersion", "developerModel", "developerReasoning", "reviewerModel", "reviewerReasoning", "validationCommands", "requiredChecks", "maxStories", "maxFixCycles", "maxValidationAttempts", "autoMerge", "stateFile", "developerPrompt", "reviewerPrompt"];
   for (const key of Object.keys(config)) if (!allowed.includes(key) || /token|password|secret|credential|auth/i.test(key)) throw new ContractValidationError(`config.${key}`, "field is not editable");
   if (config.maxStories !== undefined && (!Number.isInteger(config.maxStories) || Number(config.maxStories) < 1 || Number(config.maxStories) > 100)) throw new ContractValidationError("config.maxStories", "must be an integer between 1 and 100");
-  if (config.maxFixCycles !== undefined && (!Number.isInteger(config.maxFixCycles) || Number(config.maxFixCycles) < 0 || Number(config.maxFixCycles) > 20)) throw new ContractValidationError("config.maxFixCycles", "must be an integer between 0 and 20");
+  if (config.maxFixCycles !== undefined && (!Number.isInteger(config.maxFixCycles) || Number(config.maxFixCycles) < 1 || Number(config.maxFixCycles) > 20)) throw new ContractValidationError("config.maxFixCycles", "must be an integer between 1 and 20");
+  if (config.maxValidationAttempts !== undefined && (!Number.isInteger(config.maxValidationAttempts) || Number(config.maxValidationAttempts) < 1 || Number(config.maxValidationAttempts) > 20)) throw new ContractValidationError("config.maxValidationAttempts", "must be an integer between 1 and 20");
   for (const key of ["validationCommands", "requiredChecks"] as const) if (config[key] !== undefined && (!Array.isArray(config[key]) || config[key].some((item) => typeof item !== "string" || item.length > 500))) throw new ContractValidationError(`config.${key}`, "must be an array of strings");
-  for (const key of ["owner", "repo", "baseBranch", "controlRepository", "targetRepository", "targetBranch", "targetBacklogPath", "targetWorkspace", "model", "stateFile", "developerPrompt", "reviewerPrompt"] as const) if (config[key] !== undefined && typeof config[key] !== "string") throw new ContractValidationError(`config.${key}`, "must be a string");
+  for (const key of ["owner", "repo", "baseBranch", "controlRepository", "targetRepository", "targetBranch", "targetBacklogPath", "targetWorkspace", "model", "modelVersion", "stateFile", "developerPrompt", "reviewerPrompt"] as const) if (config[key] !== undefined && typeof config[key] !== "string") throw new ContractValidationError(`config.${key}`, "must be a string");
+  if (config.modelVersion !== undefined && !/^gpt-\d+(?:\.\d+)+$/.test(String(config.modelVersion))) throw new ContractValidationError("config.modelVersion", "must use the gpt-X.Y format, for example gpt-5.6");
   if (config.autoMerge !== undefined && typeof config.autoMerge !== "boolean") throw new ContractValidationError("config.autoMerge", "must be boolean");
+  for (const key of ["developerModel", "reviewerModel"] as const) if (config[key] !== undefined && !["luna", "sol", "terra"].includes(String(config[key]))) throw new ContractValidationError(`config.${key}`, "must be luna, sol, or terra");
+  for (const key of ["developerReasoning", "reviewerReasoning"] as const) if (config[key] !== undefined && !["low", "medium", "high", "xhigh"].includes(String(config[key]))) throw new ContractValidationError(`config.${key}`, "must be low, medium, high, or xhigh");
   return { config: config as Partial<AppConfigView>, expectedRevision: value.expectedRevision, idempotencyKey: value.idempotencyKey };
 }
 

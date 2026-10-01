@@ -5,7 +5,9 @@ import { issueStoryId } from "./backlog-sync.js";
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 type ApiIssue = { number: number; state: "open" | "closed"; title: string; body: string | null; updated_at?: string; labels?: Array<string | { name?: string }>; pull_request?: unknown };
 type PullRequest = { number: number; state: "open" | "closed"; merged_at: string | null; body: string | null; title: string; head: { ref: string; sha: string } };
-type CheckRun = { status: "queued" | "in_progress" | "completed"; conclusion: string | null; head_sha: string };
+type CheckRun = { name: string; status: "queued" | "in_progress" | "completed"; conclusion: string | null; head_sha: string };
+type ActionRun = { id: number; name: string; status: string; conclusion: string | null; head_sha: string };
+type ActionJob = { name: string; status: string; conclusion: string | null; head_sha?: string };
 
 export class GitHubSyncAdapter {
   private readonly apiRoot = "https://api.github.com";
@@ -38,8 +40,8 @@ export class GitHubSyncAdapter {
       });
       const checkedAt = new Date().toISOString();
       if (!pullRequest) { observations.push({ storyId: story.storyId, githubIssueNumber: issueNumber, state: issue?.state === "closed" ? "CLOSED" : "OPEN", checks: "UNKNOWN", checkedAt }); continue; }
-      const checks = await this.request<{ check_runs: CheckRun[] }>(`/commits/${encodeURIComponent(pullRequest.head.sha)}/check-runs`);
-      observations.push({ storyId: story.storyId, githubIssueNumber: issueNumber, pullRequestNumber: pullRequest.number, headSha: pullRequest.head.sha, state: pullRequest.merged_at ? "MERGED" : pullRequest.state === "open" ? "OPEN" : "CLOSED", checks: checkStatus(checks.check_runs), checkedAt });
+      const checks = await this.actionChecks(pullRequest.head.sha);
+      observations.push({ storyId: story.storyId, githubIssueNumber: issueNumber, pullRequestNumber: pullRequest.number, headSha: pullRequest.head.sha, state: pullRequest.merged_at ? "MERGED" : pullRequest.state === "open" ? "OPEN" : "CLOSED", checks: checkStatus(checks), checkedAt });
     }
     return observations;
   }
@@ -49,7 +51,19 @@ export class GitHubSyncAdapter {
     if (!response.ok) throw new Error(`GitHub API ${response.status} ${response.statusText}`);
     return await response.json() as T;
   }
+
+  private async actionChecks(headSha: string): Promise<CheckRun[]> {
+    const result = await this.request<{ workflow_runs: ActionRun[] }>(`/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100`);
+    const checks: CheckRun[] = [];
+    for (const run of result.workflow_runs.filter((item) => item.head_sha === headSha)) {
+      const jobs = await this.request<{ jobs: ActionJob[] }>(`/actions/runs/${run.id}/jobs?per_page=100`);
+      if (jobs.jobs.length) checks.push(...jobs.jobs.map((job) => ({ name: job.name, status: actionStatus(job.status), conclusion: job.conclusion, head_sha: job.head_sha || run.head_sha || headSha })));
+      else checks.push({ name: run.name, status: actionStatus(run.status), conclusion: run.conclusion, head_sha: run.head_sha || headSha });
+    }
+    return checks;
+  }
 }
 
 function mapIssue(issue: ApiIssue): IssueMirror { return { number: issue.number, state: issue.state, title: issue.title, body: issue.body || "", labels: (issue.labels || []).map((label) => typeof label === "string" ? label : label.name || "").filter(Boolean), updatedAt: issue.updated_at }; }
+function actionStatus(status: string): CheckRun["status"] { if (status === "completed") return "completed"; if (["queued", "waiting", "requested", "pending"].includes(status)) return "queued"; return "in_progress"; }
 function checkStatus(checks: CheckRun[]): GithubObservation["checks"] { if (!checks.length) return "UNKNOWN"; if (checks.some((check) => check.status === "completed" && check.conclusion !== "success" && check.conclusion !== "neutral" && check.conclusion !== "skipped")) return "FAIL"; return checks.every((check) => check.status === "completed") ? "PASS" : "PENDING"; }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evaluateRequiredChecks } from "../src/checks.js";
@@ -8,7 +8,7 @@ import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { emptyState, loadState, saveState, transition } from "../src/state.js";
 import { parseStory } from "../src/stories.js";
 import { runProcess } from "../src/processes.js";
-import { runValidation, runValidationPlan, validationsPassed } from "../src/verify.js";
+import { dependencyInstallCommand, runValidation, runValidationPlan, validationsPassed } from "../src/verify.js";
 import { CodexRunError, CodexRunner } from "../src/codex.js";
 import type { Issue } from "../src/types.js";
 
@@ -34,6 +34,7 @@ test("covers all required check outcomes", () => {
   assert.equal(evaluateRequiredChecks([{ name: "CI", status: "queued", conclusion: null, headSha: "sha" }], ["CI"], "sha").decision, "WAIT");
   assert.equal(evaluateRequiredChecks([{ name: "CI", status: "completed", conclusion: "cancelled", headSha: "sha" }], ["CI"], "sha").decision, "FAIL");
   assert.equal(evaluateRequiredChecks([{ name: "CI", status: "completed", conclusion: "success", headSha: "sha" }], ["CI"], "sha").decision, "PASS");
+  assert.equal(evaluateRequiredChecks([{ name: "CI / CI Gate (pull_request)", status: "completed", conclusion: "success", headSha: "sha" }], ["CI Gate"], "sha").decision, "PASS");
 });
 
 test("persists state for restart and retains story metadata", async () => {
@@ -82,6 +83,20 @@ test("executes Codex with schema output and classifies auth/quota failures", asy
   await assert.rejects(() => quotaRunner.reviewer("review", process.cwd(), 1000), (error: CodexRunError) => error.kind === "QUOTA");
 });
 
+test("passes role-specific model and reasoning settings to Codex", async () => {
+  const calls: string[][] = [];
+  const runner = new CodexRunner(process.cwd(), { model: "gpt-5.6-luna", reasoning: "xhigh" }, { model: "gpt-5.6-terra", reasoning: "high" }, async (_command, args) => {
+    calls.push(args);
+    const path = args[args.indexOf("-o") + 1];
+    await writeFile(path, args.some((arg) => arg.includes("developer-result.json")) ? JSON.stringify({ summary: "ok", tests: [], risks: [] }) : JSON.stringify({ decision: "PASS", findings: [], evidence: [] }));
+    return { code: 0, stdout: "{}", stderr: "", timedOut: false };
+  });
+  await runner.developer("implement", process.cwd(), 1000);
+  await runner.reviewer("review", process.cwd(), 1000);
+  assert.ok(calls[0].includes("--model") && calls[0].includes("gpt-5.6-luna") && calls[0].includes("model_reasoning_effort=xhigh"));
+  assert.ok(calls[1].includes("--model") && calls[1].includes("gpt-5.6-terra") && calls[1].includes("model_reasoning_effort=high"));
+});
+
 test("runs deterministic validation commands and reports failures", async () => {
   const cwd = process.cwd();
   const pass = await runValidation(["node -e \"process.stdout.write('ok')\""], cwd, 5_000);
@@ -90,6 +105,16 @@ test("runs deterministic validation commands and reports failures", async () => 
   const fail = await runValidation(["node -e \"process.stderr.write('bad'); process.exit(2)\""], cwd, 5_000);
   assert.equal(validationsPassed(fail), false);
   assert.match(fail[0].output, /bad/);
+});
+
+test("selects a lockfile-aware dependency bootstrap for clean worktrees", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "ai-factory-dependencies-"));
+  try {
+    await writeFile(join(cwd, "package.json"), JSON.stringify({ name: "fixture" })); await writeFile(join(cwd, "package-lock.json"), "{}\n");
+    assert.equal(await dependencyInstallCommand(cwd), "npm ci");
+    await mkdir(join(cwd, "node_modules"));
+    assert.equal(await dependencyInstallCommand(cwd), undefined);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
 test("runs configured smoke commands only after deterministic validation passes", async () => { const cwd = await mkdtemp(join(tmpdir(), "ai-factory-smoke-")); const plan = await runValidationPlan(["node -e \"process.stdout.write('unit')\""], ["node -e \"process.stdout.write('smoke')\""], cwd, 5_000); assert.equal(plan.validation[0].output, "unit"); assert.equal(plan.smoke[0].output, "smoke"); const failed = await runValidationPlan(["node -e \"process.exit(1)\""], ["node -e \"process.stdout.write('should-not-run')\""], cwd, 5_000); assert.equal(failed.smoke.length, 0); });

@@ -21,7 +21,8 @@ export function previewBacklogSync(stories: StoryDetail[], issues: IssueMirror[]
 
 export function desiredIssue(story: StoryDetail, number = 0): IssueMirror {
   const content = stripFrontmatter(story.markdown);
-  const body = [`<!-- ai-factory:story-id=${story.storyId} -->`, `<!-- ai-factory:local-revision=${story.specRevision} -->`, content].join("\n\n");
+  const contract = appendContractMetadata(content, story);
+  const body = [`<!-- ai-factory:story-id=${story.storyId} -->`, `<!-- ai-factory:local-revision=${story.specRevision} -->`, contract].join("\n\n");
   return { number, state: "open", title: `[${story.storyId}] ${story.title}`, body, labels: [...(story.labels || [])].sort() };
 }
 
@@ -36,3 +37,10 @@ export function issueRevision(issue: Pick<IssueMirror, "title" | "body" | "label
 }
 
 function stripFrontmatter(markdown: string): string { const normalized = markdown.replace(/\r\n/g, "\n"); if (!normalized.startsWith("---\n")) return normalized.trim(); const end = normalized.indexOf("\n---\n", 4); return end < 0 ? normalized.trim() : normalized.slice(end + 5).trim(); }
+
+function appendContractMetadata(content: string, story: StoryDetail): string {
+  const sections = [content];
+  if (!/^#{2,}\s+dependencies\s*$/im.test(content)) sections.push(`## Dependencies\n${story.dependencies.length ? story.dependencies.join(", ") : "None"}`);
+  if (!/^#{2,}\s+priority\s*$/im.test(content)) sections.push(`## Priority\n${story.priority}`);
+  return sections.join("\n\n").trim();
+}

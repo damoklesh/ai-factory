@@ -15,6 +15,8 @@ function parsed(id = "US-001", title = "Publish backlog"): StoryDetail { return 
 test("previews create, update, unchanged and conflict using stable story markers", () => {
   const story = parsed(); const desired = desiredIssue(story, 7);
   assert.equal(issueStoryId(desired), "US-001");
+  assert.match(desired.body, /## Dependencies\s+None/);
+  assert.match(desired.body, /## Priority\s+1/);
   assert.equal(previewBacklogSync([story], [], { stories: {} }).actions[0].kind, "CREATE");
   const baseline = { stories: { "US-001": { issueNumber: 7, localRevision: story.specRevision, remoteRevision: issueRevision(desired) } } };
   assert.equal(previewBacklogSync([story], [desired], baseline).actions[0].kind, "UNCHANGED");

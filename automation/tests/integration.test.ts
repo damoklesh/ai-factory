@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commitAndPush, createWorktree, gitDiff, gitSha, gitStatus, inspectChanges, removeWorktree } from "../src/git.js";
+import { commitAndPush, commitLocal, createWorktree, gitDiff, gitSha, gitStatus, inspectChanges, pushBranch, removeWorktree, squashBranch } from "../src/git.js";
 import { runProcess } from "../src/processes.js";
 import { runOrchestrator } from "../src/orchestrator.js";
 
@@ -44,6 +44,54 @@ test("creates an isolated worktree, commits, pushes, and cleans it up", async ()
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("reuses a branch worktree left by an interrupted invocation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-factory-resume-"));
+  const repository = join(directory, "repo");
+  const remote = join(directory, "remote.git");
+  try {
+    await git(directory, ["init", "--bare", remote]);
+    await git(directory, ["init", repository]);
+    await git(repository, ["config", "user.email", "test@example.invalid"]);
+    await git(repository, ["config", "user.name", "AI Factory Test"]);
+    await writeFile(join(repository, "README.md"), "base\n");
+    await git(repository, ["add", "README.md"]); await git(repository, ["commit", "-m", "base"]);
+    await git(repository, ["branch", "-M", "main"]); await git(repository, ["remote", "add", "origin", remote]); await git(repository, ["push", "-u", "origin", "main"]);
+    const first = await createWorktree(repository, "main", "agent/issue-101");
+    await writeFile(join(first.path, "in-progress.txt"), "keep me\n");
+    const resumed = await createWorktree(repository, "main", "agent/issue-101");
+    assert.equal(resumed.path, first.path);
+    assert.equal(resumed.reused, true);
+    assert.equal(await readFile(join(resumed.path, "in-progress.txt"), "utf8"), "keep me\n");
+    await removeWorktree(repository, resumed);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("creates local checkpoints and squashes them before publishing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-factory-squash-"));
+  const repository = join(directory, "repo");
+  const remote = join(directory, "remote.git");
+  try {
+    await git(directory, ["init", "--bare", remote]); await git(directory, ["init", repository]);
+    await git(repository, ["config", "user.email", "test@example.invalid"]); await git(repository, ["config", "user.name", "AI Factory Test"]);
+    await writeFile(join(repository, "README.md"), "base\n"); await git(repository, ["add", "README.md"]); await git(repository, ["commit", "-m", "base"]);
+    await git(repository, ["branch", "-M", "main"]); await git(repository, ["remote", "add", "origin", remote]); await git(repository, ["push", "-u", "origin", "main"]);
+    const worktree = await createWorktree(repository, "main", "agent/issue-102");
+    try {
+      await writeFile(join(worktree.path, "feature.txt"), "initial\n");
+      assert.equal((await commitLocal(worktree.path, "chore(agent): checkpoint", {})).changed, true);
+      await writeFile(join(worktree.path, "feature.txt"), "fixed\n");
+      assert.equal((await commitLocal(worktree.path, "chore(agent): validation fix", {})).changed, true);
+      const squashed = await squashBranch(worktree.path, "main", "feat: implement story", {});
+      assert.equal(squashed.changed, true);
+      assert.equal(await git(worktree.path, ["rev-list", "--count", "main..HEAD"]), "1");
+      await pushBranch(worktree.path, worktree.branch);
+      assert.match(await git(remote, ["for-each-ref", "--format=%(refname)", "refs/heads/agent/issue-102"]), /agent\/issue-102/);
+    } finally { await removeWorktree(repository, worktree); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("runs the mock sprint and configured dry-run through the CLI entrypoint", async () => {

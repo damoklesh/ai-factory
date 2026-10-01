@@ -73,6 +73,13 @@ export interface OrchestrationConfig {
   targetWorkspace?: string;
   runnerLabel: string;
   model?: string;
+  modelVersion: string;
+  developerModel: "luna" | "sol" | "terra";
+  developerReasoning: "low" | "medium" | "high" | "xhigh";
+  reviewerModel: "luna" | "sol" | "terra";
+  reviewerReasoning: "low" | "medium" | "high" | "xhigh";
+  developerPrompt?: string;
+  reviewerPrompt?: string;
   validationCommands: string[];
   smokeCommands: string[];
   requiredChecks: string[];
@@ -83,6 +90,8 @@ export interface OrchestrationConfig {
   };
   maxStories: number;
   maxFixCycles: number;
+  /** Maximum local developer/test correction attempts before human intervention. */
+  maxValidationAttempts: number;
   autoMerge: boolean;
   stateFile: string;
   logDirectory: string;
@@ -104,6 +113,10 @@ export interface StoryState {
   startedAt?: string;
   processStatus?: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED";
   validation?: Array<{ command: string; passed: boolean; output: string }>;
+  validationAttempts?: number;
+  fixCause?: "LOCAL_VALIDATION" | "CI_FAILURE" | "REVIEW_CHANGES_REQUESTED";
+  manualContinuationCount?: number;
+  checkpointSha?: string;
   changedFiles?: string[];
   sourceIssueUrl?: string;
   pullRequestUrl?: string;

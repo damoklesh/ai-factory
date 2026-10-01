@@ -9,11 +9,14 @@ test("maps GitHub issues, pull requests and checks without exposing the token", 
     requests.push({ url: input, authorization: String(new Headers(init?.headers).get("Authorization")) });
     if (input.endsWith("/issues?state=all&per_page=100")) return new Response(JSON.stringify([{ number: 7, state: "open", title: "[US-007] Salary", body: "<!-- AI_FACTORY_STORY_ID: US-007 -->" }]));
     if (input.endsWith("/pulls?state=all&per_page=100")) return new Response(JSON.stringify([{ number: 12, state: "open", merged_at: null, title: "Implement #7", body: "", head: { ref: "agent/issue-7", sha: "abc123" } }]));
-    return new Response(JSON.stringify({ check_runs: [{ status: "completed", conclusion: "success", head_sha: "abc123" }] }));
+    if (input.endsWith("/actions/runs?head_sha=abc123&per_page=100")) return new Response(JSON.stringify({ workflow_runs: [{ id: 21, name: "Validate", status: "completed", conclusion: "success", head_sha: "abc123" }] }));
+    if (input.endsWith("/actions/runs/21/jobs?per_page=100")) return new Response(JSON.stringify({ jobs: [{ name: "validate", status: "completed", conclusion: "success", head_sha: "abc123" }] }));
+    return new Response(JSON.stringify({ workflow_runs: [] }));
   });
   const story = { storyId: "US-007" } as StoryDetail;
   const observations = await adapter.observe([story]);
   assert.deepEqual(observations[0], { storyId: "US-007", githubIssueNumber: 7, pullRequestNumber: 12, headSha: "abc123", state: "OPEN", checks: "PASS", checkedAt: observations[0].checkedAt });
+  assert.equal(requests.some((request) => request.url.includes("/check-runs")), false);
   assert.equal(requests.every((request) => request.authorization === "Bearer secret-token"), true);
   assert.doesNotMatch(JSON.stringify(observations), /secret-token/);
 });
