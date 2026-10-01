@@ -9,7 +9,7 @@ import { backlogPath, storyIssueId, syncBacklog } from "./backlog.js";
 import { loadState, saveState, transition, canStartFix } from "./state.js";
 import { mergeReviewedPullRequest } from "./merge.js";
 import { parseStory, selectNextStory, validateDependencyGraph } from "./stories.js";
-import { runValidation, validationsPassed, waitForRequiredChecks } from "./verify.js";
+import { runValidationPlan, validationsPassed, waitForRequiredChecks } from "./verify.js";
 import type { Issue, OrchestrationConfig, PullRequest, StoryContract, StoryState } from "./types.js";
 
 export interface CliOptions { configPath: string; dryRun: boolean; mock: boolean; syncBacklog: boolean; maxStories?: number; autoMerge?: boolean; storyId?: string; runId?: string; storyContractPath?: string; instructionPath?: string; }
@@ -86,8 +86,8 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], state.stories[String(issue.number)].reason || "Codex failed"));
         return { status, state: state.stories[String(issue.number)] };
       }
-      emitOperationalEvent({ source: "validation", phase: "TESTING", message: `Running ${config.validationCommands.length} local validation command(s)`, command: config.validationCommands.join(" && ") });
-      const validation = await runValidation(config.validationCommands, worktree.path, config.timeouts.workflowMinutes * 60_000);
+      emitOperationalEvent({ source: "validation", phase: "TESTING", message: `Running ${config.validationCommands.length} validation and ${config.smokeCommands.length} smoke command(s)`, command: [...config.validationCommands, ...config.smokeCommands].join(" && ") });
+      const plan = await runValidationPlan(config.validationCommands, config.smokeCommands, worktree.path, config.timeouts.workflowMinutes * 60_000); const validation = [...plan.validation, ...plan.smoke];
       const validationText = validation.map((item) => `${item.passed ? "PASS" : "FAIL"} ${item.command}\n${item.output}`).join("\n");
       if (!validationsPassed(validation)) {
         feedback = `Local validation failed:\n${validationText}`;

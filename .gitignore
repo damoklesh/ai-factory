@@ -8,5 +8,6 @@ automation/.cache/
 automation/logs/
 automation/config.json
 .agent/
+.artifacts/
 *.local.json
 .DS_Store

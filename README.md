@@ -129,7 +129,7 @@ Copy-Item config.example.json config.json
 | `runnerLabel` | Intended runner label | `ai-local`; currently also set in the workflow |
 | `model` | Optional Codex model override | empty |
 | `validationCommands` | Commands repeated by the controller in the worktree | project-specific, e.g. `npm test` |
-| `smokeCommands` | Reserved project smoke commands | currently not executed; see the gap analysis |
+| `smokeCommands` | Project smoke commands | run after deterministic validation succeeds, with the same workflow timeout |
 | `requiredChecks` | Exact GitHub check names required for the PR SHA | project-specific, e.g. `automation` |
 | `timeouts.codexMinutes` | Per Codex invocation timeout | `45` |
 | `timeouts.ciMinutes` | Required-check polling timeout | `20` |
@@ -502,12 +502,16 @@ Validation and smoke commands are configuration-controlled shell commands. Keep 
 ## Tests and coverage
 
 ```bash
-cd automation
-npm test
-npm run coverage
+npm ci
+npm run test:unit
+npm run test:integration
+npm run test:e2e
+npm run test:all
+
+cd automation && npm run coverage
 ```
 
-The coverage command enforces approximately 60% coverage on the controller code while excluding bootstrap/configuration/type-only modules. The suite covers contract parsing, dependency selection, state persistence/reconciliation, result schemas, SHA-bound checks and merges, process/validation behavior, REST client mapping, and CLI mock/dry-run paths. A real GitHub/Codex run remains a pilot test because it requires external credentials and infrastructure.
+The three product layers are reported separately. Unit and integration tests use temporary repositories and local doubles; the Playwright E2E starts a local server with fake GitHub/Codex behavior and makes no external requests. On browser failure, screenshots, video, trace and server context are retained under `.artifacts/playwright/` (ignored by Git and uploaded by CI for seven days). `test:all` also runs the automation package suite. The automation coverage command enforces its documented thresholds. A real GitHub/Codex run remains a separate, opt-in pilot because it requires external credentials and infrastructure.
 
 ## Known limitations
 

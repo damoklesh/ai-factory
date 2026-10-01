@@ -8,7 +8,7 @@ import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { emptyState, loadState, saveState, transition } from "../src/state.js";
 import { parseStory } from "../src/stories.js";
 import { runProcess } from "../src/processes.js";
-import { runValidation, validationsPassed } from "../src/verify.js";
+import { runValidation, runValidationPlan, validationsPassed } from "../src/verify.js";
 import { CodexRunError, CodexRunner } from "../src/codex.js";
 import type { Issue } from "../src/types.js";
 
@@ -84,6 +84,8 @@ test("runs deterministic validation commands and reports failures", async () => 
   assert.equal(validationsPassed(fail), false);
   assert.match(fail[0].output, /bad/);
 });
+
+test("runs configured smoke commands only after deterministic validation passes", async () => { const cwd = await mkdtemp(join(tmpdir(), "ai-factory-smoke-")); const plan = await runValidationPlan(["node -e \"process.stdout.write('unit')\""], ["node -e \"process.stdout.write('smoke')\""], cwd, 5_000); assert.equal(plan.validation[0].output, "unit"); assert.equal(plan.smoke[0].output, "smoke"); const failed = await runValidationPlan(["node -e \"process.exit(1)\""], ["node -e \"process.stdout.write('should-not-run')\""], cwd, 5_000); assert.equal(failed.smoke.length, 0); });
 
 test("captures process failure and timeout without throwing", async () => {
   const failed = await runProcess(process.execPath, ["-e", "process.exit(3)"], { cwd: process.cwd(), timeoutMs: 5_000 });

@@ -45,7 +45,7 @@ El repositorio ya contiene piezas valiosas que deben reutilizarse:
 | Configuración | Configuración común en `automation/config.example.json` y config UI/API con owner/repo/branch | Separar `controlRepository` (AI Factory) de `targetProject` (ruta/repo/branch/backlog). No dejar que valores por defecto silenciosamente apunten a AI Factory. |
 | Calidad | Hay tests de parser, Github, integración y tests server/UI; `npm test` tiene un alcance centrado en server/UI y el gap analysis detecta pruebas reales pendientes | Unificar un comando de validación; añadir unitarios, integración en repositorio temporal y E2E de navegador con Codex/GitHub simulados. |
 
-Riesgos y discrepancias ya anotados en `docs/architecture-gap-analysis.md` que siguen siendo relevantes: `smokeCommands` se carga pero no se ejecuta; no está completa la reconciliación de estado/PR interrumpidos; existe `git add -A` sin revisión restrictiva del diff; la cancelación del árbol de procesos y el lock para dos controladores locales requieren protección. Los secretos deben seguir fuera de configuración, logs y commits.
+Riesgos y discrepancias ya anotados en `docs/architecture-gap-analysis.md` que siguen siendo relevantes: no está completa la reconciliación de estado/PR interrumpidos; la cancelación del árbol de procesos y el lock para dos controladores locales requieren protección; y los smoke tests con Docker todavía necesitan aislamiento de recursos específico. Los secretos deben seguir fuera de configuración, logs y commits.
 
 ### Diagnóstico sintético
 
