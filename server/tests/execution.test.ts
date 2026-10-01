@@ -65,7 +65,8 @@ test("materializes and resumes a blocked external orchestrator run after a resta
   const statePath = join(root, "automation", ".cache", "state.json"); await mkdir(join(root, "automation", ".cache"), { recursive: true }); await writeFile(statePath, JSON.stringify({ stories: { "18": { issueNumber: 18, branch: "agent/issue-18", status: "NEEDS_HUMAN", reason: "reviewer requested a decision", updatedAt: new Date().toISOString() } } }), "utf8");
   const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const execution = new FakeExecution(); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution, orchestratorStatePath: statePath }); await controller.selectProject(target);
   const external = (await controller.runs())[0]; assert.equal(external.runId, "external-issue-18"); assert.equal(external.status, "BLOCKED");
-  const resumed = await controller.control(external.runId, "resume"); assert.equal(resumed.status, "ACTIVE"); assert.equal(resumed.storyId, "US-001"); assert.equal(execution.contexts[0].story.githubIssueNumber, 18);
+  const instruction = await controller.addInstruction(external.runId, { content: "Continue from the current PR", expectedRunStatus: "BLOCKED", idempotencyKey: "external-resume" }); assert.equal(instruction.status, "PENDING_NEXT_INVOCATION");
+  const resumed = await controller.control(external.runId, "resume"); assert.equal(resumed.status, "ACTIVE"); assert.equal(resumed.storyId, "US-001"); assert.equal(execution.contexts[0].story.githubIssueNumber, 18); assert.deepEqual(execution.contexts[0].instructions, ["Continue from the current PR"]);
 });
 
 test("exposes Resume when a cancelled local run left the external story in an active stage", async () => {

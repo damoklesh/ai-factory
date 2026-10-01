@@ -101,8 +101,23 @@ export class LocalController {
   async story(storyId: string): Promise<StoryDetail | undefined> { await this.ensureStories(); await this.refreshOrchestratorState(); const story = this.stories.find((item) => item.storyId === storyId); return story ? { ...story, issueUrl: issueUrl(this.config, story.githubIssueNumber), pullRequestUrl: pullRequestUrl(this.config, story.pullRequestNumber) } : undefined; }
   async runs(): Promise<RunSnapshot[]> { await this.ensureRuns(); await this.ensureStories(); await this.refreshOrchestratorState(); return [...this.externalRuns(), ...this.runHistory]; }
   async run(runId: string): Promise<RunSnapshot | undefined> { await this.ensureRuns(); return this.runHistory.find((run) => run.runId === runId) || this.persistence.readSnapshot(runId); }
-  async logs(runId: string, options: { cursor?: number; limit?: number; level?: LogEntry["level"]; source?: LogEntry["source"]; search?: string } = {}): Promise<LogPage> { return this.persistence.readEventsPage(runId, options); }
-  async eventsSince(cursor = 0, runId?: string): Promise<LogEntry[]> { await this.ensureRuns(); const runs = runId ? this.runHistory.filter((run) => run.runId === runId) : this.runHistory; const events: LogEntry[] = []; for (const run of runs) events.push(...await this.persistence.readEvents(run.runId)); return events.filter((event) => event.sequence > cursor).sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.sequence - right.sequence); }
+  async logs(runId: string, options: { cursor?: number; limit?: number; level?: LogEntry["level"]; source?: LogEntry["source"]; search?: string } = {}): Promise<LogPage> {
+    await this.ensureRuns();
+    const direct = await this.persistence.readEventsPage(runId, options);
+    if (direct.entries.length || !runId.startsWith("external-issue-")) return direct;
+    const storyId = this.externalRuns().find((item) => item.runId === runId)?.storyId;
+    const source = storyId ? this.runHistory.find((item) => item.storyId === storyId && item.runId !== runId) : undefined;
+    return source ? this.persistence.readEventsPage(source.runId, options) : direct;
+  }
+  async eventsSince(cursor = 0, runId?: string): Promise<LogEntry[]> {
+    await this.ensureRuns();
+    let runs = runId ? this.runHistory.filter((run) => run.runId === runId) : this.runHistory;
+    if (runId?.startsWith("external-issue-") && !runs.length) {
+      const storyId = this.externalRuns().find((item) => item.runId === runId)?.storyId;
+      if (storyId) runs = this.runHistory.filter((run) => run.storyId === storyId);
+    }
+    const events: LogEntry[] = []; for (const run of runs) events.push(...await this.persistence.readEvents(run.runId)); return events.filter((event) => event.sequence > cursor).sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.sequence - right.sequence);
+  }
   async approvals(): Promise<ApprovalRequest[]> { return this.approvalItems; }
   async decideApproval(requestId: string, request: DecisionRequest): Promise<DecisionResult> {
     const approval = this.approvalItems.find((item) => item.requestId === requestId);
@@ -125,7 +140,17 @@ export class LocalController {
   }
   async addInstruction(runId: string, request: InstructionRequest): Promise<InstructionResult> {
     const previous = this.instructions.get(request.idempotencyKey); if (previous) return previous;
-    await this.ensureRuns(); const run = this.runHistory.find((item) => item.runId === runId); if (!run) throw new Error("RUN_NOT_FOUND");
+    await this.ensureRuns(); await this.ensureStories(); await this.refreshOrchestratorState();
+    let run = this.runHistory.find((item) => item.runId === runId);
+    if (!run) {
+      const external = this.externalRuns().find((item) => item.runId === runId);
+      if (external) {
+        run = external;
+        this.runHistory = [run, ...this.runHistory];
+        await this.persistence.writeSnapshot(run.runId, run);
+      }
+    }
+    if (!run) throw new Error("RUN_NOT_FOUND");
     if (run.status !== request.expectedRunStatus) throw new Error("RUN_CONTEXT_CHANGED");
     const result: InstructionResult = { instructionId: randomUUID(), runId, storyId: run.storyId, status: "PENDING_NEXT_INVOCATION", receivedAt: new Date().toISOString() };
     this.instructions.set(request.idempotencyKey, result); await this.persistence.appendInstruction(runId, { ...result, content: request.content, expectedRunStatus: request.expectedRunStatus }); return result;
@@ -143,7 +168,9 @@ export class LocalController {
   async updateConfig(request: ConfigUpdateRequest): Promise<{ revision: string; config: AppConfigView; diff: string }> {
     const previous = this.configUpdates.get(request.idempotencyKey); if (previous) return previous;
     if (request.expectedRevision !== this.configRevision) throw new Error("VERSION_CONFLICT");
-    const next = { ...this.config, ...request.config }; const diff = unifiedDiff(JSON.stringify(this.config, null, 2), JSON.stringify(next, null, 2));
+    if (request.config.autoMerge === true) throw new Error("AUTO_MERGE_DISABLED");
+    if (request.config.stateFile !== undefined && request.config.stateFile !== this.config.stateFile) throw new Error("STATE_FILE_MANAGED_PER_PROJECT");
+    const next = { ...this.config, ...request.config, autoMerge: false }; const diff = unifiedDiff(JSON.stringify(this.config, null, 2), JSON.stringify(next, null, 2));
     const path = configFilePath(this.options.configPath); await mkdir(dirname(path), { recursive: true }); const temp = `${path}.${process.pid}.tmp`; await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, "utf8"); await rename(temp, path);
     this.config = next; this.configRevision = createHash("sha256").update(JSON.stringify(next)).digest("hex").slice(0, 12); const result = { revision: this.configRevision, config: { ...this.config }, diff }; this.configUpdates.set(request.idempotencyKey, result); return result;
   }
@@ -337,9 +364,10 @@ export class LocalController {
       // of presenting a permanently active (and uncontrollable) run.
       const recoveredRun = this.runHistory.find((run) => run.storyId === story.storyId && ["CANCELLED", "FAILED", "INTERRUPTED"].includes(run.status) && Date.parse(run.updatedAt) >= Date.parse(story.updatedAt));
       const lostProcess = story.agentProcess?.status === "LOST";
-      const blocked = story.executionStatus === "BLOCKED" || Boolean(recoveredRun) || lostProcess;
-      const interruptionReason = recoveredRun?.resultSummary || story.agentReason || (lostProcess ? "The orchestrator process is no longer running; resume to continue." : undefined);
-      return { schemaVersion: SCHEMA_VERSION, runId: `external-issue-${story.githubIssueNumber || story.storyId}`, storyId: story.storyId, status: blocked ? "BLOCKED" : story.executionStatus === "FINISHED" ? "FINISHED" : "ACTIVE", phase: phaseForAgentStatus(story.agentStatus), startedAt: story.updatedAt, updatedAt: story.updatedAt, attempts: 1, maxStories: 1, autoMerge: false, validationStatus: story.validationStatus, effectiveConfigRevision: this.configRevision, interruptionReason } as RunSnapshot;
+      const waiting = ["PR_OPEN", "QUEUED_FOR_REVIEW", "READY_FOR_MERGE", "MERGE_PENDING_APPROVAL", "WAITING_FOR_CI"].includes(story.agentStatus || "");
+      const blocked = story.executionStatus === "BLOCKED" || Boolean(recoveredRun) || lostProcess || waiting;
+      const interruptionReason = recoveredRun?.resultSummary || story.agentReason || (waiting ? story.nextAction || "The PR is waiting for the next safe action." : lostProcess ? "The orchestrator process is no longer running; resume to continue." : undefined);
+      return { schemaVersion: SCHEMA_VERSION, runId: `external-issue-${story.githubIssueNumber || story.storyId}`, storyId: story.storyId, status: blocked ? "BLOCKED" : story.executionStatus === "FINISHED" ? "FINISHED" : "ACTIVE", phase: waiting ? "WAITING" : phaseForAgentStatus(story.agentStatus), startedAt: story.updatedAt, updatedAt: story.updatedAt, attempts: 1, maxStories: 1, autoMerge: false, validationStatus: story.validationStatus, effectiveConfigRevision: this.configRevision, interruptionReason, activity: waiting ? "WAITING_FOR_INPUT" : undefined } as RunSnapshot;
     }).filter((run) => !persisted.has(run.runId));
   }
   private async ensureRuns(): Promise<void> {

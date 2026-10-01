@@ -124,7 +124,7 @@ function Config() {
         <label>Required checks<textarea value={(draft.requiredChecks || []).join("\n")} onChange={(event) => update("requiredChecks", event.target.value.split(/\r?\n/).filter(Boolean))} /><small className="muted">Leave empty during bootstrap to run the reviewer without CI; merging stays disabled until checks are configured.</small></label>
         <label>Developer prompt<textarea value={draft.developerPrompt || ""} onChange={(event) => update("developerPrompt", event.target.value)} /></label>
         <label>Reviewer prompt<textarea value={draft.reviewerPrompt || ""} onChange={(event) => update("reviewerPrompt", event.target.value)} /></label>
-        <label className="checkbox-label"><input type="checkbox" checked={Boolean(draft.autoMerge)} onChange={(event) => update("autoMerge", event.target.checked)} /> Allow auto-merge (still subject to CI and GitHub rules)</label>
+        <p className="muted">Manual merge is enforced. Auto-merge cannot be enabled from this application.</p>
         <button className="primary" onClick={() => void save()}>Save revision</button>
         {message && <div className="notice">{message}</div>}
       </div>
