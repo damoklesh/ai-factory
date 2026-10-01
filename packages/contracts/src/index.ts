@@ -5,6 +5,14 @@ export type ExecutionStatus = "IDLE" | "ACTIVE" | "PAUSE_REQUESTED" | "PAUSED" |
 export type ValidationStatus = "PENDING" | "PASS" | "FAIL" | "UNKNOWN" | "STALE";
 export type RunPhase = "SELECTING" | "IMPLEMENTING" | "TESTING" | "CI" | "REVIEWING" | "FIXING" | "MERGING" | "PAUSED" | "STOPPED" | "FINISHED";
 
+export interface StoryDiagnostic {
+  severity: "ERROR" | "WARNING";
+  code: string;
+  message: string;
+  file: string;
+  line: number;
+}
+
 export interface StorySummary {
   storyId: string;
   title: string;
@@ -29,6 +37,9 @@ export interface StorySummary {
   agentStatus?: string;
   agentReason?: string;
   branch?: string;
+  sourceFile?: string;
+  valid?: boolean;
+  diagnostics?: StoryDiagnostic[];
 }
 
 export interface StoryDetail extends StorySummary {
@@ -49,6 +60,7 @@ export interface StoryDetail extends StorySummary {
 
 export interface GithubObservation { storyId: string; githubIssueNumber?: number; pullRequestNumber?: number; headSha?: string; validatedHeadSha?: string; state: "OPEN" | "CLOSED" | "MERGED"; checks: "PASS" | "FAIL" | "PENDING" | "UNKNOWN"; checkedAt: string; }
 export interface SyncResult { connected: boolean; stale: boolean; syncedAt?: string; message: string; changedStoryIds: string[]; }
+export interface BacklogValidation { valid: boolean; diagnostics: StoryDiagnostic[]; template: string; }
 
 export interface ProjectSnapshot {
   schemaVersion: number;

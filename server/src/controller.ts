@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import type { ApprovalRequest, AppConfigView, ConfigUpdateRequest, DecisionRequest, DecisionResult, Diagnostic, GithubObservation, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StorySummary, SyncResult } from "@ai-factory/contracts";
+import type { ApprovalRequest, AppConfigView, BacklogValidation, ConfigUpdateRequest, DecisionRequest, DecisionResult, Diagnostic, GithubObservation, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StoryDiagnostic, StorySummary, SyncResult } from "@ai-factory/contracts";
 import { SCHEMA_VERSION } from "@ai-factory/contracts";
 import { AgentPersistence } from "./persistence.js";
-import { loadRepositoryStories } from "./stories.js";
+import { BACKLOG_STORY_TEMPLATE, loadBacklog } from "./stories.js";
 import { loadAppConfig, configFilePath } from "./config.js";
 
 type Listener = (event: LogEntry) => void;
@@ -20,6 +20,7 @@ export class LocalController {
   private readonly decisions = new Map<string, DecisionResult>();
   private readonly instructions = new Map<string, InstructionResult>();
   private stories: StoryDetail[] = [];
+  private storyDiagnostics: StoryDiagnostic[] = [];
   private storiesLoaded = false;
   private runHistory: RunSnapshot[] = [];
   private runsLoaded = false;
@@ -37,6 +38,7 @@ export class LocalController {
     await this.ensureRuns();
     const diagnostics: Diagnostic[] = [
       { name: "controller", available: true, message: "local controller ready" },
+      { name: "backlog", available: !this.storyDiagnostics.some((item) => item.severity === "ERROR"), message: this.storyDiagnostics.length ? `${this.storyDiagnostics.filter((item) => item.severity === "ERROR").length} error(s), ${this.storyDiagnostics.filter((item) => item.severity === "WARNING").length} warning(s)` : "valid" },
       { name: "github", available: this.githubConnected, message: this.githubConnected ? "adapter connected" : "No GitHub adapter configured" },
       { name: "codex", available: this.options.codexAvailable !== false, message: this.options.codexAvailable === false ? "Codex executable is not available" : "available through the configured runner" },
     ];
@@ -50,8 +52,9 @@ export class LocalController {
     await this.ensureStories();
     await this.refreshOrchestratorState();
     const search = query?.search?.trim().toLowerCase();
-    return this.stories.filter((story) => !search || `${story.storyId} ${story.title} ${story.objective}`.toLowerCase().includes(search)).filter((story) => !query?.status || query.status === "all" || statusFor(story) === query.status).map((story) => ({ storyId: story.storyId, title: story.title, priority: story.priority, dependencies: story.dependencies, deliveryStatus: story.deliveryStatus, executionStatus: story.executionStatus, validationStatus: story.validationStatus, specSource: story.specSource, specRevision: story.specRevision, githubIssueNumber: story.githubIssueNumber, pullRequestNumber: story.pullRequestNumber, headSha: story.headSha, validatedHeadSha: story.validatedHeadSha, externalStatus: story.externalStatus, externalStale: story.externalStale, blockedReason: story.blockedReason, dependencyError: story.dependencyError, issueUrl: issueUrl(this.config, story.githubIssueNumber), pullRequestUrl: pullRequestUrl(this.config, story.pullRequestNumber), updatedAt: story.updatedAt, agentStatus: story.agentStatus, agentReason: story.agentReason, branch: story.branch }));
+    return this.stories.filter((story) => !search || `${story.storyId} ${story.title} ${story.objective}`.toLowerCase().includes(search)).filter((story) => !query?.status || query.status === "all" || statusFor(story) === query.status).map((story) => ({ storyId: story.storyId, title: story.title, priority: story.priority, dependencies: story.dependencies, deliveryStatus: story.deliveryStatus, executionStatus: story.executionStatus, validationStatus: story.validationStatus, specSource: story.specSource, specRevision: story.specRevision, githubIssueNumber: story.githubIssueNumber, pullRequestNumber: story.pullRequestNumber, headSha: story.headSha, validatedHeadSha: story.validatedHeadSha, externalStatus: story.externalStatus, externalStale: story.externalStale, blockedReason: story.blockedReason, dependencyError: story.dependencyError, issueUrl: issueUrl(this.config, story.githubIssueNumber), pullRequestUrl: pullRequestUrl(this.config, story.pullRequestNumber), updatedAt: story.updatedAt, agentStatus: story.agentStatus, agentReason: story.agentReason, branch: story.branch, sourceFile: story.sourceFile, valid: story.valid, diagnostics: story.diagnostics }));
   }
+  async backlogValidation(): Promise<BacklogValidation> { await this.ensureStories(); return { valid: !this.storyDiagnostics.some((item) => item.severity === "ERROR"), diagnostics: [...this.storyDiagnostics], template: BACKLOG_STORY_TEMPLATE }; }
   async story(storyId: string): Promise<StoryDetail | undefined> { await this.ensureStories(); await this.refreshOrchestratorState(); const story = this.stories.find((item) => item.storyId === storyId); return story ? { ...story, issueUrl: issueUrl(this.config, story.githubIssueNumber), pullRequestUrl: pullRequestUrl(this.config, story.pullRequestNumber) } : undefined; }
   async runs(): Promise<RunSnapshot[]> { await this.ensureRuns(); await this.ensureStories(); await this.refreshOrchestratorState(); return [...this.externalRuns(), ...this.runHistory]; }
   async run(runId: string): Promise<RunSnapshot | undefined> { await this.ensureRuns(); return this.runHistory.find((run) => run.runId === runId) || this.persistence.readSnapshot(runId); }
@@ -86,7 +89,7 @@ export class LocalController {
     if (["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(story.executionStatus)) throw new Error("SPEC_EDIT_REQUIRES_PAUSE");
     const diff = unifiedDiff(story.markdown, request.markdown);
     if (!request.confirm) return { preview: true, diff };
-    const root = resolve(this.options.backlogRoot || "backlog"); const path = resolve(root, `${storyId}.md`); if (path !== join(root, `${storyId}.md`)) throw new Error("PERMISSION_DENIED");
+    const root = resolve(this.options.backlogRoot || "backlog"); const path = resolve(root, story.sourceFile || `${storyId}.md`); if (dirname(path) !== root) throw new Error("PERMISSION_DENIED");
     await writeFile(path, request.markdown, "utf8"); const revision = createHash("sha256").update(request.markdown).digest("hex").slice(0, 12); this.stories = this.stories.map((item) => item.storyId === storyId ? { ...item, markdown: request.markdown, specRevision: revision, updatedAt: new Date().toISOString() } : item); return { preview: false, diff, revision };
   }
   async updateConfig(request: ConfigUpdateRequest): Promise<{ revision: string; config: AppConfigView; diff: string }> {
@@ -98,6 +101,7 @@ export class LocalController {
   }
   async sync(): Promise<SyncResult> {
     await this.ensureStories();
+    this.assertValidBacklog();
     if (!this.options.githubAdapter && this.options.githubConnected !== true) { this.githubConnected = false; this.syncStale = true; return { connected: false, stale: true, message: "GitHub unavailable; remote facts were not changed", changedStoryIds: [] }; }
     let observations: GithubObservation[];
     try { observations = this.options.githubAdapter ? await this.options.githubAdapter.observe(this.stories) : this.options.githubObservations || []; this.githubConnected = true; } catch (error) { this.githubConnected = false; this.syncStale = true; return { connected: false, stale: true, message: error instanceof Error ? error.message : "GitHub unavailable; remote facts were not changed", changedStoryIds: [] }; }
@@ -117,6 +121,7 @@ export class LocalController {
   subscribe(listener: Listener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   async start(request: StartRunRequest): Promise<RunSnapshot> {
     await this.ensureStories();
+    this.assertValidBacklog();
     await this.ensureRuns();
     if (this.activeRun && ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(this.activeRun.status)) throw new Error("RUN_ALREADY_ACTIVE");
     const now = new Date().toISOString();
@@ -138,7 +143,8 @@ export class LocalController {
   }
   private async persist(message: string): Promise<void> { if (!this.activeRun) return; await this.persistence.writeSnapshot(this.activeRun.runId, this.activeRun); this.runHistory = [this.activeRun, ...this.runHistory.filter((run) => run.runId !== this.activeRun?.runId)]; const event: LogEntry = { schemaVersion: SCHEMA_VERSION, eventId: randomUUID(), runId: this.activeRun.runId, sequence: (await this.persistence.readEvents(this.activeRun.runId)).length + 1, timestamp: new Date().toISOString(), source: "controller", phase: this.activeRun.phase, level: "INFO", message }; await this.persistence.appendEvent(this.activeRun.runId, event); for (const listener of this.listeners) listener(event); }
 
-  private async ensureStories(): Promise<void> { if (this.storiesLoaded) return; this.stories = await loadRepositoryStories(this.options.backlogRoot); this.storiesLoaded = true; }
+  private async ensureStories(): Promise<void> { if (this.storiesLoaded) return; const backlog = await loadBacklog(this.options.backlogRoot); this.stories = backlog.stories; this.storyDiagnostics = backlog.diagnostics; this.storiesLoaded = true; }
+  private assertValidBacklog(): void { const first = this.storyDiagnostics.find((item) => item.severity === "ERROR"); if (first) throw new Error(`BACKLOG_INVALID: ${first.file}:${first.line} ${first.message}`); }
   private async refreshOrchestratorState(): Promise<void> {
     if (!this.options.orchestratorStatePath) return;
     let parsed: OrchestratorState;
