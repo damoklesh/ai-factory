@@ -303,10 +303,12 @@ export class LocalController {
     }
     await this.persist(`orchestrator ${terminalStatus.toLowerCase()}: ${finished.resultSummary}`); if (this.activeRun?.runId === runId && this.activeRun.status === terminalStatus && terminalStatus !== "BLOCKED") this.activeRun = undefined; }
   private async refreshOrchestratorState(): Promise<void> {
-    if (!this.options.orchestratorStatePath) return;
-    let parsed: OrchestratorState;
-    try { parsed = JSON.parse(await readFile(resolve(this.options.orchestratorStatePath), "utf8")) as OrchestratorState; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; return; }
+    let parsed: OrchestratorState | undefined;
+    for (const statePath of this.orchestratorStatePaths()) {
+      try { parsed = JSON.parse(await readFile(statePath, "utf8")) as OrchestratorState; break; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return; }
+    }
+    if (!parsed) return;
     const states = Object.values(parsed.stories || {});
     this.stories = this.stories.map((story) => {
       const state = states.find((item) => item.issueNumber === story.githubIssueNumber);
@@ -319,6 +321,12 @@ export class LocalController {
       const processStatus = stale && (active || state.reviewerStatus === "RUNNING") ? "LOST" : state.processStatus === "RUNNING" ? "RUNNING" : state.processStatus === "STARTING" ? "STARTING" : blocked ? "FAILED" : state.reviewerStatus === "RUNNING" ? "RUNNING" : undefined;
       return { ...story, executionStatus: active ? "ACTIVE" : blocked ? "BLOCKED" : state.status === "DONE" ? "FINISHED" : waiting ? "PAUSED" : story.executionStatus, deliveryStatus: state.status === "PR_OPEN" || waiting ? "PR_OPEN" : state.status === "DONE" ? "MERGED" : active ? "IMPLEMENTING" : story.deliveryStatus, blockedReason: blocked ? state.reason || state.status : story.blockedReason, branch: state.branch, agentStatus: state.status, agentReason: state.reason, pullRequestNumber: state.pullRequestNumber || story.pullRequestNumber, headSha: state.headSha || story.headSha, workflowStage: stage, stageStartedAt: story.stageStartedAt || state.startedAt || state.updatedAt, stageUpdatedAt: state.updatedAt, nextAction: nextActionFor(state.status), agentProcess: processStatus ? { role: state.status === "REVIEWING" ? "REVIEWER" : state.status === "FIXING" ? "FIXER" : "IMPLEMENTER", status: processStatus as "STARTING" | "RUNNING" | "FAILED" | "LOST", startedAt: state.startedAt, lastEventAt: state.updatedAt } : undefined, updatedAt: state.updatedAt };
     });
+  }
+  private orchestratorStatePaths(): string[] {
+    const paths: string[] = [];
+    if (this.activeProject && this.options.projectStore) paths.push(join(this.options.projectStore.projectDataRoot(this.activeProject.projectId), "orchestrator-state.json"));
+    if (this.options.orchestratorStatePath) paths.push(resolve(this.options.orchestratorStatePath));
+    return [...new Set(paths)];
   }
   private externalRuns(): RunSnapshot[] {
     const persisted = new Set(this.runHistory.map((run) => run.runId));
