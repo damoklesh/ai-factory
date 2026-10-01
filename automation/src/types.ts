@@ -74,9 +74,9 @@ export interface OrchestrationConfig {
   runnerLabel: string;
   model?: string;
   developerModel: "luna" | "sol" | "terra";
-  developerReasoning: "low" | "medium" | "high";
+  developerReasoning: "low" | "medium" | "high" | "xhigh";
   reviewerModel: "luna" | "sol" | "terra";
-  reviewerReasoning: "low" | "medium" | "high";
+  reviewerReasoning: "low" | "medium" | "high" | "xhigh";
   validationCommands: string[];
   smokeCommands: string[];
   requiredChecks: string[];

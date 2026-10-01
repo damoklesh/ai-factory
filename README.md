@@ -129,7 +129,7 @@ Copy-Item config.example.json config.json
 | `runnerLabel` | Intended runner label | `ai-local`; currently also set in the workflow |
 | `model` | Optional Codex model override | empty |
 | `developerModel` / `reviewerModel` | Codex model selection per agent | `luna`, `sol`, or `terra` |
-| `developerReasoning` / `reviewerReasoning` | Reasoning effort per agent | `low`, `medium`, or `high` |
+| `developerReasoning` / `reviewerReasoning` | Reasoning effort per agent | Developer `xhigh`; Reviewer `high` (also supports `low`/`medium`) |
 | `validationCommands` | Commands repeated by the controller in the worktree | project-specific, e.g. `npm test` |
 | `smokeCommands` | Project smoke commands | run after deterministic validation succeeds, with the same workflow timeout |
 | `requiredChecks` | Exact GitHub check names required for the PR SHA | project-specific, e.g. `automation` |

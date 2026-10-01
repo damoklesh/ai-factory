@@ -5,7 +5,7 @@ import { runProcess, type ProcessResult } from "./processes.js";
 import { parseReviewResult, validateDeveloperResult } from "./result.js";
 import type { CodexExecution, ReviewResult } from "./types.js";
 
-export interface CodexAgentConfig { model?: string; reasoning?: "low" | "medium" | "high"; }
+export interface CodexAgentConfig { model?: string; reasoning?: "low" | "medium" | "high" | "xhigh"; }
 
 export class CodexRunError extends Error {
   constructor(message: string, readonly kind: "AUTH" | "QUOTA" | "FAILED") { super(message); }

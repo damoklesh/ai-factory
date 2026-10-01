@@ -18,6 +18,10 @@ test("normalizes target repository configuration and keeps legacy owner/repo sup
     assert.equal(target.baseBranch, "develop");
     assert.equal(target.targetRepository, "acme/revenue");
     assert.equal(target.targetBacklogPath, "backlog");
+    assert.equal(target.developerModel, "luna");
+    assert.equal(target.developerReasoning, "xhigh");
+    assert.equal(target.reviewerModel, "terra");
+    assert.equal(target.reviewerReasoning, "high");
 
     const legacyConfig = join(directory, "legacy.json");
     await writeFile(legacyConfig, JSON.stringify({ owner: "acme", repo: "legacy", baseBranch: "main" }));

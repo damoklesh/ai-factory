@@ -197,9 +197,9 @@ export interface AppConfigView {
   targetWorkspace?: string;
   model?: string;
   developerModel: "luna" | "sol" | "terra";
-  developerReasoning: "low" | "medium" | "high";
+  developerReasoning: "low" | "medium" | "high" | "xhigh";
   reviewerModel: "luna" | "sol" | "terra";
-  reviewerReasoning: "low" | "medium" | "high";
+  reviewerReasoning: "low" | "medium" | "high" | "xhigh";
   validationCommands: string[];
   requiredChecks: string[];
   maxStories: number;
@@ -276,7 +276,7 @@ export function parseConfigUpdateRequest(value: unknown): ConfigUpdateRequest {
   for (const key of ["owner", "repo", "baseBranch", "controlRepository", "targetRepository", "targetBranch", "targetBacklogPath", "targetWorkspace", "model", "stateFile", "developerPrompt", "reviewerPrompt"] as const) if (config[key] !== undefined && typeof config[key] !== "string") throw new ContractValidationError(`config.${key}`, "must be a string");
   if (config.autoMerge !== undefined && typeof config.autoMerge !== "boolean") throw new ContractValidationError("config.autoMerge", "must be boolean");
   for (const key of ["developerModel", "reviewerModel"] as const) if (config[key] !== undefined && !["luna", "sol", "terra"].includes(String(config[key]))) throw new ContractValidationError(`config.${key}`, "must be luna, sol, or terra");
-  for (const key of ["developerReasoning", "reviewerReasoning"] as const) if (config[key] !== undefined && !["low", "medium", "high"].includes(String(config[key]))) throw new ContractValidationError(`config.${key}`, "must be low, medium, or high");
+  for (const key of ["developerReasoning", "reviewerReasoning"] as const) if (config[key] !== undefined && !["low", "medium", "high", "xhigh"].includes(String(config[key]))) throw new ContractValidationError(`config.${key}`, "must be low, medium, high, or xhigh");
   return { config: config as Partial<AppConfigView>, expectedRevision: value.expectedRevision, idempotencyKey: value.idempotencyKey };
 }
 

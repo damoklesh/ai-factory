@@ -112,10 +112,10 @@ Configuración por proyecto (ejemplo conceptual; no obliga a persistir este JSON
   "baseBranch": "main",
   "backlogPath": "backlog",
   "validationCommands": [],
-  "developerModel": "sol",
-  "developerReasoning": "medium",
-  "reviewerModel": "sol",
-  "reviewerReasoning": "medium",
+  "developerModel": "luna",
+  "developerReasoning": "xhigh",
+  "reviewerModel": "terra",
+  "reviewerReasoning": "high",
   "autoMerge": false,
   "maxStoriesPerRun": 1
 }
