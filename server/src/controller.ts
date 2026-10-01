@@ -364,10 +364,13 @@ export class LocalController {
       // of presenting a permanently active (and uncontrollable) run.
       const recoveredRun = this.runHistory.find((run) => run.storyId === story.storyId && ["CANCELLED", "FAILED", "INTERRUPTED"].includes(run.status) && Date.parse(run.updatedAt) >= Date.parse(story.updatedAt));
       const lostProcess = story.agentProcess?.status === "LOST";
-      const waiting = ["PR_OPEN", "QUEUED_FOR_REVIEW", "READY_FOR_MERGE", "MERGE_PENDING_APPROVAL", "WAITING_FOR_CI"].includes(story.agentStatus || "");
-      const blocked = story.executionStatus === "BLOCKED" || Boolean(recoveredRun) || lostProcess || waiting;
-      const interruptionReason = recoveredRun?.resultSummary || story.agentReason || (waiting ? story.nextAction || "The PR is waiting for the next safe action." : lostProcess ? "The orchestrator process is no longer running; resume to continue." : undefined);
-      return { schemaVersion: SCHEMA_VERSION, runId: `external-issue-${story.githubIssueNumber || story.storyId}`, storyId: story.storyId, status: blocked ? "BLOCKED" : story.executionStatus === "FINISHED" ? "FINISHED" : "ACTIVE", phase: waiting ? "WAITING" : phaseForAgentStatus(story.agentStatus), startedAt: story.updatedAt, updatedAt: story.updatedAt, attempts: 1, maxStories: 1, autoMerge: false, validationStatus: story.validationStatus, effectiveConfigRevision: this.configRevision, interruptionReason, activity: waiting ? "WAITING_FOR_INPUT" : undefined } as RunSnapshot;
+      // A merge-pending PR requires a human GitHub action, not another agent
+      // invocation. Other durable PR stages remain recoverable with Resume.
+      const recoverablePrStage = ["PR_OPEN", "QUEUED_FOR_REVIEW", "READY_FOR_MERGE", "MERGE_PENDING_APPROVAL", "WAITING_FOR_CI"].includes(story.agentStatus || "");
+      const awaitingHumanMerge = story.agentStatus === "MERGE_PENDING_APPROVAL";
+      const blocked = story.executionStatus === "BLOCKED" || Boolean(recoveredRun) || lostProcess || recoverablePrStage;
+      const interruptionReason = recoveredRun?.resultSummary || story.agentReason || (awaitingHumanMerge ? "Merge the approved pull request in GitHub, then refresh this page." : lostProcess ? "The orchestrator process is no longer running; resume to continue." : undefined);
+      return { schemaVersion: SCHEMA_VERSION, runId: `external-issue-${story.githubIssueNumber || story.storyId}`, storyId: story.storyId, status: blocked ? "BLOCKED" : story.executionStatus === "FINISHED" ? "FINISHED" : "ACTIVE", phase: awaitingHumanMerge ? "WAITING" : phaseForAgentStatus(story.agentStatus), startedAt: story.updatedAt, updatedAt: story.updatedAt, attempts: 1, maxStories: 1, autoMerge: false, validationStatus: story.validationStatus, effectiveConfigRevision: this.configRevision, interruptionReason, activity: awaitingHumanMerge ? "WAITING_FOR_INPUT" : undefined } as RunSnapshot;
     }).filter((run) => !persisted.has(run.runId));
   }
   private async ensureRuns(): Promise<void> {

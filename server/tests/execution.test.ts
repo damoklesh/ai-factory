@@ -69,6 +69,17 @@ test("materializes and resumes a blocked external orchestrator run after a resta
   const resumed = await controller.control(external.runId, "resume"); assert.equal(resumed.status, "ACTIVE"); assert.equal(resumed.storyId, "US-001"); assert.equal(execution.contexts[0].story.githubIssueNumber, 18); assert.deepEqual(execution.contexts[0].instructions, ["Continue from the current PR"]);
 });
 
+test("makes an interrupted PR stage resumable but keeps human merge pending outside the agent loop", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-pr-recovery-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
+  await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
+  await writeFile(join(backlog, "US-001.md"), story("US-001", 1, "none", "NOT_STARTED", 18), "utf8");
+  const statePath = join(root, "automation", ".cache", "state.json"); await mkdir(join(root, "automation", ".cache"), { recursive: true });
+  const writeState = async (status: string) => writeFile(statePath, JSON.stringify({ stories: { "18": { issueNumber: 18, branch: "agent/issue-18", status, pullRequestNumber: 35, updatedAt: new Date().toISOString() } } }), "utf8");
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: new FakeExecution(), orchestratorStatePath: statePath }); await controller.selectProject(target);
+  await writeState("PR_OPEN"); const resumable = (await controller.runs())[0]; assert.equal(resumable.status, "BLOCKED"); assert.notEqual(resumable.phase, "WAITING");
+  await writeState("MERGE_PENDING_APPROVAL"); const awaitingMerge = (await controller.runs())[0]; assert.equal(awaitingMerge.status, "BLOCKED"); assert.equal(awaitingMerge.phase, "WAITING"); assert.equal(awaitingMerge.activity, "WAITING_FOR_INPUT");
+});
+
 test("exposes Resume when a cancelled local run left the external story in an active stage", async () => {
   const root = await mkdtemp(join(tmpdir(), "ai-factory-stale-external-run-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
   await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
