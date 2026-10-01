@@ -166,6 +166,7 @@ export interface RunSnapshot {
   completedStories?: string[];
   remainingStories?: string[];
   stopReason?: string;
+  recoveryStatus?: "VERIFIED_RUNNING" | "WAITING" | "INTERRUPTED" | "UNKNOWN";
 }
 
 export interface ApprovalRequest {

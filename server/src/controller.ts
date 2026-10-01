@@ -296,8 +296,10 @@ export class LocalController {
     const lock = this.activeProject && this.options.projectStore ? new ProjectRunLock(this.options.projectStore.projectDataRoot(this.activeProject.projectId)) : undefined;
     const interrupted = this.runHistory.filter((run) => ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(run.status));
     for (const run of interrupted) {
-      if (lock && await lock.isLive(run.runId)) continue;
-      const recovered = { ...run, status: "INTERRUPTED" as const, activity: "IDLE" as const, interruptionReason: "backend restarted before the run completed", updatedAt: new Date().toISOString() };
+      const owned = lock && await lock.isLive(run.runId);
+      const childAlive = run.processId ? processAlive(run.processId) : false;
+      if (owned && childAlive) { const verified = { ...run, recoveryStatus: "VERIFIED_RUNNING" as const, updatedAt: new Date().toISOString() }; this.runHistory = this.runHistory.map((item) => item.runId === run.runId ? verified : item); continue; }
+      const recovered = { ...run, status: "INTERRUPTED" as const, recoveryStatus: childAlive ? "UNKNOWN" as const : "INTERRUPTED" as const, activity: "IDLE" as const, interruptionReason: childAlive ? "process identity could not be verified after backend restart" : "backend restarted before the run completed", updatedAt: new Date().toISOString() };
       await this.enqueueEvent(recovered.runId, recovered, { source: "controller", phase: recovered.phase, level: "WARN", message: recovered.interruptionReason });
       this.runHistory = this.runHistory.map((item) => item.runId === recovered.runId ? recovered : item);
     }
@@ -316,3 +318,4 @@ function issueUrl(config: AppConfigView, issue?: number): string | undefined { r
 function pullRequestUrl(config: AppConfigView, pullRequest?: number): string | undefined { return pullRequest ? `https://github.com/${config.owner}/${config.repo}/pull/${pullRequest}` : undefined; }
 function samePreview(left: BacklogSyncPreview, right: BacklogSyncPreview): boolean { const comparable = (preview: BacklogSyncPreview) => preview.actions.map((item) => ({ storyId: item.storyId, kind: item.kind, issueNumber: item.issueNumber, localRevision: item.localRevision, remoteRevision: item.remoteRevision })); return JSON.stringify(comparable(left)) === JSON.stringify(comparable(right)); }
 function unifiedDiff(before: string, after: string): string { const left = before.split(/\r?\n/); const right = after.split(/\r?\n/); const lines = [`--- current`, `+++ proposed`]; const size = Math.max(left.length, right.length); for (let index = 0; index < size; index += 1) { if (left[index] === right[index]) lines.push(`  ${left[index] || ""}`); else { if (left[index] !== undefined) lines.push(`- ${left[index]}`); if (right[index] !== undefined) lines.push(`+ ${right[index]}`); } } return lines.join("\n"); }
+function processAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } }
