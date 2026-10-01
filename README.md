@@ -15,7 +15,7 @@ The UI packages are `ui/` (React), `server/` (Node HTTP API and local controller
 
 From **Executions**, choose one valid story or deterministic **next eligible** selection. The local API writes a run-specific, secret-free config and story contract, then spawns the trusted `automation/dist/src/orchestrator.js` from this base checkout. Codex itself runs only in the isolated target story worktree. A run is marked `ACTIVE` only after spawn succeeds, is limited to one story, and always has `autoMerge: false`; spawn/config failures remain visible as durable failed runs. Before commit/push, the automation package inspects the changed paths and refuses controller policy, CI workflow, operational-state, and secret-like files rather than using `git add -A`.
 
-V1 deliberately serializes execution in one local controller, even across different targets; a second start is rejected until the active run reaches a terminal state. The execution service also keeps a per-project guard as defense in depth. Cross-process atomic locking is added by the hardening story before multiple controller instances are supported.
+V1 serializes execution per target project. A second start for the same target is rejected by an atomic PID/host lock; different targets can run concurrently when their worktrees and resources are independent. The in-memory execution guard remains defense in depth.
 
 Useful commands:
 
@@ -515,4 +515,4 @@ The three product layers are reported separately. Unit and integration tests use
 
 ## Known limitations
 
-Read [`docs/architecture-gap-analysis.md`](docs/architecture-gap-analysis.md) before calling the pilot production-ready. In particular, Docker/Compose smoke execution, file logging, local process locking, full GitHub pagination/status contexts, and a complete end-to-end real-repository run still need follow-up work.
+Read [`docs/architecture-gap-analysis.md`](docs/architecture-gap-analysis.md) and [`docs/operations-runbook.md`](docs/operations-runbook.md) before calling the pilot production-ready. Docker/Compose lifecycle isolation, full GitHub pagination/status contexts, and a complete end-to-end real-repository run still need follow-up work.

@@ -1,8 +1,10 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { access, mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppConfigView, RunPhase, StoryDetail, TargetProject } from "@ai-factory/contracts";
 import { sanitizeText } from "./persistence.js";
+import { promisify } from "node:util";
+const execFileAsync = promisify(execFile);
 
 export interface ExecutionContext {
   runId: string;
@@ -63,18 +65,19 @@ export class ChildProcessExecutionService implements ExecutionService {
     const storyTemp = `${storyContractPath}.${process.pid}.tmp`; await writeFile(storyTemp, `${JSON.stringify(storyContract, null, 2)}\n`, "utf8"); await rename(storyTemp, storyContractPath);
     const instructionTemp = `${instructionPath}.${process.pid}.tmp`; await writeFile(instructionTemp, `${JSON.stringify(context.instructions || [], null, 2)}\n`, "utf8"); await rename(instructionTemp, instructionPath);
     const args = [script, "--config", configPath, "--max-stories", "1", "--story-id", context.story.storyId, "--story-contract", storyContractPath, "--instruction-file", instructionPath, "--run-id", context.runId];
-    const child = spawn(process.execPath, args, { cwd: context.controlRoot, env: process.env, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, args, { cwd: context.controlRoot, env: process.env, shell: false, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     this.activeProjects.set(context.project.projectId, context.runId);
-    let stdout = ""; let stderr = ""; let stdoutBuffer = ""; let stderrBuffer = ""; let terminalOutcome: string | undefined; let timedOut = false;
+    let stdout = ""; let stderr = ""; let stdoutBuffer = ""; let stderrBuffer = ""; let terminalOutcome: string | undefined; let timedOut = false; let cancelRequested = false;
     const consume = (stream: "stdout" | "stderr", value: Buffer) => { const chunk = sanitizeText(value.toString()); if (stream === "stdout") stdout = bounded(stdout, chunk); else stderr = bounded(stderr, chunk); this.onOutput?.(context.runId, stream, chunk); const combined = `${stream === "stdout" ? stdoutBuffer : stderrBuffer}${chunk}`; const lines = combined.split(/\r?\n/); if (stream === "stdout") stdoutBuffer = lines.pop() || ""; else stderrBuffer = lines.pop() || ""; for (const line of lines) { const event = normalizeProcessLine(line, stream); if (event.outcome) terminalOutcome = event.outcome; context.onEvent?.(event); } };
     child.stdout.on("data", (value: Buffer) => consume("stdout", value)); child.stderr.on("data", (value: Buffer) => consume("stderr", value));
-    const timeout = this.timeoutMs > 0 ? setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, this.timeoutMs) : undefined;
+    const timeout = this.timeoutMs > 0 ? setTimeout(() => { timedOut = true; void terminateProcessTree(child.pid); }, this.timeoutMs) : undefined;
     const completion = new Promise<ExecutionOutcome>((resolve) => child.on("close", (code, signal) => {
       if (timeout) clearTimeout(timeout);
       if (stdoutBuffer) { const event = normalizeProcessLine(stdoutBuffer, "stdout"); if (event.outcome) terminalOutcome = event.outcome; context.onEvent?.(event); }
       if (stderrBuffer) context.onEvent?.(normalizeProcessLine(stderrBuffer, "stderr"));
       this.activeProjects.delete(context.project.projectId);
       if (timedOut) resolve({ status: "FAILED", summary: `Orchestrator timed out after ${this.timeoutMs}ms`, exitCode: code });
+      else if (cancelRequested) resolve({ status: "CANCELLED", summary: "Orchestrator cancelled by user", exitCode: code });
       else if (signal) resolve({ status: "CANCELLED", summary: `Orchestrator stopped by ${signal}`, exitCode: code });
       else if (code !== 0) resolve({ status: "FAILED", summary: lastMessage(stderr) || lastMessage(stdout) || `Orchestrator exited with ${code}`, exitCode: code });
       else if (/NEEDS_HUMAN|PAUSED_AUTH|PAUSED_QUOTA/i.test(terminalOutcome || "")) resolve({ status: "BLOCKED", summary: lastMessage(stdout) || terminalOutcome || "Orchestrator needs input.", exitCode: code });
@@ -82,8 +85,14 @@ export class ChildProcessExecutionService implements ExecutionService {
       else resolve({ status: "SUCCEEDED", summary: lastMessage(stdout) || "Orchestrator completed successfully.", exitCode: code });
     }));
     await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", (error) => { this.activeProjects.delete(context.project.projectId); reject(error); }); });
-    return { pid: child.pid, completion, cancel: async () => { if (!child.killed) child.kill("SIGTERM"); } };
+    return { pid: child.pid, completion, cancel: async () => { cancelRequested = true; await terminateProcessTree(child.pid); } };
   }
+}
+
+async function terminateProcessTree(pid: number | undefined): Promise<void> {
+  if (!pid) return;
+  if (process.platform === "win32") { await execFileAsync("taskkill", ["/pid", String(pid), "/t", "/f"], { windowsHide: true }).catch(() => undefined); return; }
+  try { process.kill(-pid, "SIGTERM"); } catch { try { process.kill(pid, "SIGTERM"); } catch { /* already exited */ } }
 }
 
 function bounded(current: string, chunk: string): string { const value = `${current}${chunk}`; return value.length > 1_000_000 ? value.slice(-1_000_000) : value; }

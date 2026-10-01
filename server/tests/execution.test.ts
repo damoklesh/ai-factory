@@ -23,11 +23,11 @@ class FakeExecution implements ExecutionService {
   finish(index: number, outcome: ExecutionOutcome): void { this.resolvers[index](outcome); }
 }
 
-async function fixture(execution: ExecutionService): Promise<{ controller: LocalController; target: string }> {
+async function fixture(execution: ExecutionService): Promise<{ controller: LocalController; target: string; control: string }> {
   const root = await mkdtemp(join(tmpdir(), "ai-factory-execution-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
   await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
   await writeFile(join(backlog, "US-001.md"), story("US-001", 1, "none", "MERGED", 1)); await writeFile(join(backlog, "US-002.md"), story("US-002", 2, "US-001", "NOT_STARTED", 2)); await writeFile(join(backlog, "US-003.md"), story("US-003", 1, "none", "NOT_STARTED", 3));
-  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution }); await controller.selectProject(target); return { controller, target };
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution }); await controller.selectProject(target); return { controller, target, control };
 }
 
 test("selects deterministically, spawns before ACTIVE, and completes visibly", async () => {
@@ -60,6 +60,11 @@ test("applies queued human instructions only to an explicit next invocation", as
   assert.ok((await controller.logs(run.runId)).entries.some((entry) => /queued instruction.*applied/i.test(entry.message)));
 });
 
+test("rejects a second controller for the same target using the durable project lock", async () => {
+  const firstExecution = new FakeExecution(); const { controller, target, control } = await fixture(firstExecution); await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "auto" });
+  const secondExecution = new FakeExecution(); const secondStore = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const second = new LocalController(new AgentPersistence(join(control, ".agent", "unselected-2")), { projectStore: secondStore, executionService: secondExecution }); await second.selectProject(target); await assert.rejects(() => second.start({ maxStories: 1, autoMerge: false, selectionMode: "auto" }), /RUN_ALREADY_ACTIVE_FOR_PROJECT/);
+});
+
 test("spawns the trusted automation entrypoint with explicit target, story, run and manual-merge config", async () => {
   const root = await mkdtemp(join(tmpdir(), "ai-factory-child-execution-")); const control = join(root, "control"); const target = join(root, "target"); const scriptDir = join(control, "automation", "dist", "src"); const stateRoot = join(control, ".agent", "project"); await mkdir(scriptDir, { recursive: true }); await mkdir(target);
   await writeFile(join(scriptDir, "orchestrator.js"), "console.log(JSON.stringify({aiFactoryEvent:true,source:'developer',phase:'IMPLEMENTING',level:'INFO',message:'fake developer running',activity:'RUNNING'})); setTimeout(() => console.log('fake orchestrator done'), 200);\n", "utf8"); await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
@@ -74,4 +79,5 @@ test("spawns the trusted automation entrypoint with explicit target, story, run 
   const blocked = await service.start({ ...context, runId: "run-auth" }); assert.equal((await blocked.completion).status, "BLOCKED");
   await writeFile(join(scriptDir, "orchestrator.js"), "setTimeout(() => console.log('too late'), 5000);\n", "utf8");
   const timed = await new ChildProcessExecutionService(undefined, 50).start({ ...context, runId: "run-timeout" }); const timedOutcome = await timed.completion; assert.equal(timedOutcome.status, "FAILED"); assert.match(timedOutcome.summary, /timed out/);
+  await writeFile(join(scriptDir, "orchestrator.js"), "setTimeout(() => console.log('never'), 5000);\n", "utf8"); const cancellable = await service.start({ ...context, runId: "run-cancel" }); await cancellable.cancel?.(); assert.equal((await cancellable.completion).status, "CANCELLED");
 });
