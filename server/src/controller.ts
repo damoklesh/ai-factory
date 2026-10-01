@@ -181,7 +181,12 @@ export class LocalController {
     if (request.expectedConfigRevision && request.expectedConfigRevision !== this.configRevision) throw new Error("VERSION_CONFLICT");
     if (this.startPending || (this.activeRun && ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(this.activeRun.status))) throw new Error("RUN_ALREADY_ACTIVE");
     this.startPending = true; const now = new Date().toISOString(); const selectionMode = request.selectionMode || "auto"; let story: StoryDetail | undefined;
-    try { story = this.selectRunnableStory(selectionMode, request.storyId); if (this.options.executionService && !story) throw new Error("NO_ELIGIBLE_STORY"); const maxStories = Math.max(1, Math.min(20, Math.floor(request.maxStories || 1))); const selectionPlan = this.plannedStoryIds(maxStories); this.activeRun = { schemaVersion: SCHEMA_VERSION, runId: randomUUID(), storyId: story?.storyId, status: "IDLE", phase: "SELECTING", startedAt: now, updatedAt: now, attempts: 0, maxStories, autoMerge: false, validationStatus: "PENDING", effectiveConfigRevision: this.configRevision, effectiveSpecRevision: story?.specRevision, selectionMode, targetProjectId: this.activeProject?.projectId, selectionPlan, completedStories: [], remainingStories: selectionPlan.slice(1) }; await this.persist("run accepted; starting bounded backlog plan"); }
+    try {
+      story = this.selectRunnableStory(selectionMode, request.storyId);
+      if (this.options.executionService && story) story = await this.ensureGithubIssueLink(story);
+      if (this.options.executionService && !story) throw new Error("NO_ELIGIBLE_STORY");
+      const maxStories = Math.max(1, Math.min(20, Math.floor(request.maxStories || 1))); const selectionPlan = this.plannedStoryIds(maxStories); this.activeRun = { schemaVersion: SCHEMA_VERSION, runId: randomUUID(), storyId: story?.storyId, status: "IDLE", phase: "SELECTING", startedAt: now, updatedAt: now, attempts: 0, maxStories, autoMerge: false, validationStatus: "PENDING", effectiveConfigRevision: this.configRevision, effectiveSpecRevision: story?.specRevision, selectionMode, targetProjectId: this.activeProject?.projectId, selectionPlan, completedStories: [], remainingStories: selectionPlan.slice(1) }; await this.persist("run accepted; starting bounded backlog plan");
+    }
     catch (error) { this.startPending = false; throw error; }
     if (!this.options.executionService) { this.activeRun = { ...this.activeRun!, status: "ACTIVE", updatedAt: new Date().toISOString() }; if (story) this.markStoryActive(story, now); await this.persist("run started"); this.startPending = false; return this.activeRun; }
     try {
@@ -201,7 +206,8 @@ export class LocalController {
     else if (action === "resume" && ["PAUSED", "STOPPED", "INTERRUPTED", "STOP_REQUESTED", "PAUSE_REQUESTED", "BLOCKED"].includes(this.activeRun.status)) {
       if (this.options.executionService && !this.executionHandles.has(runId)) {
         await this.ensureStories();
-        const story = this.stories.find((item) => item.storyId === this.activeRun?.storyId); if (!story) throw new Error("STORY_NOT_FOUND");
+        let story = this.stories.find((item) => item.storyId === this.activeRun?.storyId); if (!story) throw new Error("STORY_NOT_FOUND");
+        if (this.options.executionService) story = await this.ensureGithubIssueLink(story);
         const pending = (await this.persistence.readInstructions<{ instructionId: string; content?: string; status: string }>(runId)).filter((item) => item.status === "PENDING_NEXT_INVOCATION" && item.content);
         this.activeRun = { ...this.activeRun, status: "IDLE", phase: "SELECTING", activity: "IDLE", pauseRequested: false, stopRequested: false, updatedAt: new Date().toISOString() }; await this.persist("resume accepted; starting next invocation");
         const lock = new ProjectRunLock(this.options.projectStore!.projectDataRoot(this.activeProject!.projectId)); await lock.acquire(runId); this.runLocks.set(runId, lock); const resumed = await this.spawnExecution(story, pending.map((item) => item.content!));
@@ -252,6 +258,15 @@ export class LocalController {
   }
 
   private async ensureStories(): Promise<void> { await this.ensureProjectContext(); if (this.storiesLoaded) return; if (this.options.projectStore && !this.activeProject) { this.stories = []; this.storyDiagnostics = []; this.storiesLoaded = true; return; } const backlog = await loadBacklog(this.activeProject?.backlogPath || this.options.backlogRoot); this.stories = backlog.stories; this.storyDiagnostics = backlog.diagnostics; this.storiesLoaded = true; }
+  private async ensureGithubIssueLink(story: StoryDetail): Promise<StoryDetail> {
+    if (story.githubIssueNumber || (!this.githubAdapter && this.options.githubConnected !== true)) return story;
+    await this.sync();
+    const synced = this.stories.find((item) => item.storyId === story.storyId);
+    if (!synced?.githubIssueNumber) return synced || story;
+    const linked = { ...story, githubIssueNumber: synced.githubIssueNumber };
+    this.stories = this.stories.map((item) => item.storyId === story.storyId ? linked : item);
+    return linked;
+  }
   private assertValidBacklog(): void { const first = this.storyDiagnostics.find((item) => item.severity === "ERROR"); if (first) throw new Error(`BACKLOG_INVALID: ${first.file}:${first.line} ${first.message}`); }
   private async ensureProjectContext(): Promise<void> { if (this.projectContextLoaded) return; this.projectContextLoaded = true; if (!this.options.projectStore) return; const project = await this.options.projectStore.active(); if (project) this.applyProject(project); }
   private applyProject(project: TargetProject): void { this.projectContextLoaded = true; this.activeProject = project; this.stories = []; this.storyDiagnostics = []; this.storiesLoaded = false; this.runHistory = []; this.runsLoaded = false; this.activeRun = undefined; this.persistence = new AgentPersistence(this.options.projectStore!.projectDataRoot(project.projectId)); this.githubAdapter = this.options.githubAdapterFactory ? this.options.githubAdapterFactory(project) : this.options.githubAdapter; this.githubConnected = this.options.githubConnected === true || Boolean(this.githubAdapter); if (project.github) this.config = { ...this.config, owner: project.github.owner, repo: project.github.repo, targetRepository: `${project.github.owner}/${project.github.repo}` }; if (project.baseBranch) this.config = { ...this.config, baseBranch: project.baseBranch, targetBranch: project.baseBranch }; }
