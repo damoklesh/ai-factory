@@ -68,6 +68,18 @@ test("materializes and resumes a blocked external orchestrator run after a resta
   const resumed = await controller.control(external.runId, "resume"); assert.equal(resumed.status, "ACTIVE"); assert.equal(resumed.storyId, "US-001"); assert.equal(execution.contexts[0].story.githubIssueNumber, 18);
 });
 
+test("exposes Resume when a cancelled local run left the external story in an active stage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-stale-external-run-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
+  await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
+  await writeFile(join(backlog, "US-001.md"), story("US-001", 1, "none", "NOT_STARTED", 18), "utf8");
+  const statePath = join(root, "automation", ".cache", "state.json"); await mkdir(join(root, "automation", ".cache"), { recursive: true });
+  const stateUpdatedAt = new Date().toISOString(); await writeFile(statePath, JSON.stringify({ stories: { "18": { issueNumber: 18, branch: "agent/issue-18", status: "FIXING", processStatus: "RUNNING", reason: "validation failed", updatedAt: stateUpdatedAt } } }), "utf8");
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const execution = new FakeExecution(); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution, orchestratorStatePath: statePath }); await controller.selectProject(target);
+  const started = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "selected", storyId: "US-001" }); execution.finish(0, { status: "CANCELLED", summary: "Orchestrator cancelled by user", exitCode: null });
+  for (let attempt = 0; attempt < 20 && !(await controller.runs()).some((run) => run.runId === started.runId && run.status === "CANCELLED"); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  const external = (await controller.runs()).find((run) => run.runId === "external-issue-18"); assert.equal(external?.status, "BLOCKED"); assert.match(external?.interruptionReason || "", /cancelled/i);
+});
+
 test("continues an automatic plan once a fake GitHub adapter confirms the human merge", async () => {
   const execution = new FakeExecution(); let merged = false;
   const githubAdapter: GithubSyncAdapter = { async observe() { return [{ storyId: "US-003", githubIssueNumber: 3, pullRequestNumber: 30, headSha: "sha-30", state: merged ? "MERGED" : "OPEN", checks: "PASS", checkedAt: new Date().toISOString() }]; } };

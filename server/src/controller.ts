@@ -322,7 +322,17 @@ export class LocalController {
   }
   private externalRuns(): RunSnapshot[] {
     const persisted = new Set(this.runHistory.map((run) => run.runId));
-    return this.stories.filter((story) => story.agentStatus).map((story) => ({ schemaVersion: SCHEMA_VERSION, runId: `external-issue-${story.githubIssueNumber || story.storyId}`, storyId: story.storyId, status: story.executionStatus === "BLOCKED" ? "BLOCKED" : story.executionStatus === "FINISHED" ? "FINISHED" : "ACTIVE", phase: phaseForAgentStatus(story.agentStatus), startedAt: story.updatedAt, updatedAt: story.updatedAt, attempts: 1, maxStories: 1, autoMerge: false, validationStatus: story.validationStatus, effectiveConfigRevision: this.configRevision, interruptionReason: story.agentReason } as RunSnapshot)).filter((run) => !persisted.has(run.runId));
+    return this.stories.filter((story) => story.agentStatus).map((story) => {
+      // The orchestrator state is durable, but a controller restart/cancel can
+      // leave it at an active stage after the local run has already terminated.
+      // Treat that combination as recoverable so the UI exposes Resume instead
+      // of presenting a permanently active (and uncontrollable) run.
+      const recoveredRun = this.runHistory.find((run) => run.storyId === story.storyId && ["CANCELLED", "FAILED", "INTERRUPTED"].includes(run.status) && Date.parse(run.updatedAt) >= Date.parse(story.updatedAt));
+      const lostProcess = story.agentProcess?.status === "LOST";
+      const blocked = story.executionStatus === "BLOCKED" || Boolean(recoveredRun) || lostProcess;
+      const interruptionReason = recoveredRun?.resultSummary || story.agentReason || (lostProcess ? "The orchestrator process is no longer running; resume to continue." : undefined);
+      return { schemaVersion: SCHEMA_VERSION, runId: `external-issue-${story.githubIssueNumber || story.storyId}`, storyId: story.storyId, status: blocked ? "BLOCKED" : story.executionStatus === "FINISHED" ? "FINISHED" : "ACTIVE", phase: phaseForAgentStatus(story.agentStatus), startedAt: story.updatedAt, updatedAt: story.updatedAt, attempts: 1, maxStories: 1, autoMerge: false, validationStatus: story.validationStatus, effectiveConfigRevision: this.configRevision, interruptionReason } as RunSnapshot;
+    }).filter((run) => !persisted.has(run.runId));
   }
   private async ensureRuns(): Promise<void> {
     await this.ensureProjectContext();
