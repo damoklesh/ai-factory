@@ -9,7 +9,7 @@ import type { ExecutionContext, ExecutionHandle, ExecutionOutcome, ExecutionServ
 import { ChildProcessExecutionService } from "../src/execution.js";
 import { AgentPersistence } from "../src/persistence.js";
 import { ProjectWorkspaceStore } from "../src/projects.js";
-import { LocalController } from "../src/controller.js";
+import { LocalController, type GithubSyncAdapter } from "../src/controller.js";
 import { parseMarkdown } from "../src/stories.js";
 
 const execFileAsync = promisify(execFile);
@@ -23,11 +23,11 @@ class FakeExecution implements ExecutionService {
   finish(index: number, outcome: ExecutionOutcome): void { this.resolvers[index](outcome); }
 }
 
-async function fixture(execution: ExecutionService): Promise<{ controller: LocalController; target: string; control: string }> {
+async function fixture(execution: ExecutionService, githubAdapter?: GithubSyncAdapter): Promise<{ controller: LocalController; target: string; control: string }> {
   const root = await mkdtemp(join(tmpdir(), "ai-factory-execution-")); const control = join(root, "control"); const target = join(root, "target"); const backlog = join(target, "backlog"); await mkdir(control); await mkdir(backlog, { recursive: true });
   await execFileAsync("git", ["init", target], { windowsHide: true }); await execFileAsync("git", ["-C", target, "remote", "add", "origin", "https://github.com/acme/target.git"], { windowsHide: true });
   await writeFile(join(backlog, "US-001.md"), story("US-001", 1, "none", "MERGED", 1)); await writeFile(join(backlog, "US-002.md"), story("US-002", 2, "US-001", "NOT_STARTED", 2)); await writeFile(join(backlog, "US-003.md"), story("US-003", 1, "none", "NOT_STARTED", 3));
-  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution }); await controller.selectProject(target); return { controller, target, control };
+  const store = new ProjectWorkspaceStore(control, join(control, ".agent", "projects")); const controller = new LocalController(new AgentPersistence(join(control, ".agent", "unselected")), { projectStore: store, executionService: execution, githubAdapter }); await controller.selectProject(target); return { controller, target, control };
 }
 
 test("selects deterministically, spawns before ACTIVE, and completes visibly", async () => {
@@ -44,6 +44,18 @@ test("selects deterministically, spawns before ACTIVE, and completes visibly", a
 test("honors explicit selection and dependency gates", async () => {
   const execution = new FakeExecution(); const { controller } = await fixture(execution); await assert.rejects(() => controller.start({ maxStories: 1, autoMerge: false, selectionMode: "selected", storyId: "US-001" }), /STORY_NOT_RUNNABLE/); const run = await controller.start({ maxStories: 1, autoMerge: false, selectionMode: "selected", storyId: "US-002" }); assert.equal(run.storyId, "US-002");
   await assert.rejects(() => controller.start({ maxStories: 1, autoMerge: true }), /AUTO_MERGE_DISABLED/);
+});
+
+test("continues an automatic plan once a fake GitHub adapter confirms the human merge", async () => {
+  const execution = new FakeExecution(); let merged = false;
+  const githubAdapter: GithubSyncAdapter = { async observe() { return [{ storyId: "US-003", githubIssueNumber: 3, pullRequestNumber: 30, headSha: "sha-30", state: merged ? "MERGED" : "OPEN", checks: "PASS", checkedAt: new Date().toISOString() }]; } };
+  const { controller } = await fixture(execution, githubAdapter); const run = await controller.start({ maxStories: 2, autoMerge: false, selectionMode: "auto" });
+  execution.finish(0, { status: "BLOCKED", summary: "MERGE_PENDING_APPROVAL: awaiting human merge approval" });
+  for (let attempt = 0; attempt < 20 && (await controller.run(run.runId))?.status !== "BLOCKED"; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal((await controller.story("US-003"))?.deliveryStatus, "IMPLEMENTING");
+  merged = true; await controller.sync();
+  for (let attempt = 0; attempt < 20 && execution.contexts.length < 2; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal((await controller.story("US-003"))?.deliveryStatus, "MERGED"); assert.equal(execution.contexts.length, 2); assert.equal(execution.contexts[1].story.storyId, "US-002");
 });
 
 test("persists a terminal failure when spawn or configuration fails", async () => {
