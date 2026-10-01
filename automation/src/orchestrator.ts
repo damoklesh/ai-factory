@@ -6,7 +6,7 @@ import { CodexRunError, CodexRunner } from "./codex.js";
 import { buildPullRequestBody, replaceAgentLabel, RestGitHubClient, type GitHubClient } from "./github.js";
 import { commitLocal, createWorktree, gitDiff, gitRoot, gitStatus, pushBranch, removeWorktree, squashBranch, ensureTargetRepository, type Worktree } from "./git.js";
 import { backlogPath, storyIssueId, syncBacklog } from "./backlog.js";
-import { loadState, saveState, transition, canStartFix, nextFixCycle } from "./state.js";
+import { loadState, saveState, transition, canStartFix, nextFixCycle, shouldRunDeveloper } from "./state.js";
 import { evaluateMergeGate, mergeReviewedPullRequest } from "./merge.js";
 import { parseStory, selectNextStory, storyEligibility, validateDependencyGraph } from "./stories.js";
 import { runValidationPlan, validationsPassed, waitForRequiredChecks } from "./verify.js";
@@ -66,45 +66,51 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
   const root = target.path;
   let worktree: Worktree | undefined;
   let pullRequest: PullRequest | undefined = (await client.listPullRequests(branch))[0];
-  let feedback = "";
   const previous = state.stories[String(issue.number)];
+  let feedback = previous && (previous.status === "FIXING" || previous.status === "REVIEW_CHANGES_REQUESTED") ? previous.reason || "" : "";
   // Fix cycles measure developer/reviewer iterations after a PR exists. A stale
   // local-only state must never consume that budget or make the first PR start
   // at an exhausted cycle.
   let cycle = pullRequest ? previous?.fixCycles || 0 : 0;
   let implementationAttempt = 0;
   let validationAttempts = 0;
-  let implementationNeeded = true;
-  transition(state, issue.number, "IMPLEMENTING", { branch, pullRequestNumber: pullRequest?.number, fixCycles: cycle, startedAt: new Date().toISOString(), processStatus: "STARTING", sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}` });
+  let developerNeeded = shouldRunDeveloper(Boolean(pullRequest), previous?.status);
+  transition(state, issue.number, developerNeeded ? "IMPLEMENTING" : "PR_OPEN", { branch, pullRequestNumber: pullRequest?.number, fixCycles: cycle, startedAt: new Date().toISOString(), processStatus: "STARTING", sourceIssueUrl: `https://github.com/${config.owner}/${config.repo}/issues/${issue.number}` });
   await saveState(stateFile, state);
   await mark(client, issue, "agent:running");
   try {
     worktree = await createWorktree(root, config.targetBranch, branch, { env: target.env });
     emitOperationalEvent({ source: "git", phase: "IMPLEMENTING", message: `${worktree.reused ? "Resuming" : "Created"} local worktree for ${branch} at ${worktree.path}` });
-    const existingWork = Boolean((await gitDiff(worktree.path, config.targetBranch).catch(() => "")).trim() || (await gitStatus(worktree.path, { env: target.env })).trim());
-    implementationNeeded = !pullRequest && !existingWork;
+    // A PR is the delivery boundary. On restart, do not invoke the developer
+    // again just because the controller was interrupted while waiting for CI or
+    // the reviewer. Developer work is requested only for a new story, or for a
+    // persisted review/fix state.
+    developerNeeded = pullRequest ? shouldRunDeveloper(true, previous?.status) : true;
+    if (pullRequest && !developerNeeded) emitOperationalEvent({ source: "orchestrator", phase: "PR_OPEN", message: `Resuming PR #${pullRequest.number} at ${pullRequest.headSha.slice(0, 12)}; developer step skipped`, activity: "RUNNING" });
     const codex = new CodexRunner(target.controlRoot, { model: resolveModelId(config.modelVersion, config.developerModel), reasoning: config.developerReasoning }, { model: resolveModelId(config.modelVersion, config.reviewerModel), reasoning: config.reviewerReasoning });
     while (cycle <= config.maxFixCycles) {
-      const developerPhase = implementationNeeded ? "IMPLEMENTING" : "FIXING";
-      const attemptId = `${config.runId || "cli"}:${issue.number}:${implementationNeeded ? "implement" : "fix"}-${cycle}-${implementationAttempt}`;
-      implementationAttempt += 1;
-      transition(state, issue.number, developerPhase, { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined, attemptId, fixerStatus: developerPhase === "FIXING" ? "STARTING" : undefined, validationAttempts });
-      await saveState(stateFile, state);
-      try {
-        emitOperationalEvent({ source: "developer", phase: developerPhase, message: `Developer agent started for issue #${issue.number}: ${implementationNeeded ? "initial implementation" : "fixing the current validation/review findings"}, review cycle ${cycle}, validation attempt ${validationAttempts + 1}/${config.maxValidationAttempts}${instructions.length ? `, ${instructions.length} human instruction(s)` : ""}` });
-        transition(state, issue.number, developerPhase, { processStatus: "RUNNING", fixerStatus: developerPhase === "FIXING" ? "RUNNING" : undefined, reason: feedback || undefined });
+      const developerPhase = pullRequest ? "FIXING" : "IMPLEMENTING";
+      if (developerNeeded) {
+        const attemptId = `${config.runId || "cli"}:${issue.number}:${pullRequest ? "fix" : "implement"}-${cycle}-${implementationAttempt}`;
+        implementationAttempt += 1;
+        transition(state, issue.number, developerPhase, { branch, fixCycles: cycle, pullRequestNumber: pullRequest?.number, reason: feedback || undefined, attemptId, fixerStatus: pullRequest ? "STARTING" : undefined, validationAttempts });
         await saveState(stateFile, state);
-        await codex.developer(storyPrompt(issue, contract, feedback, instructions, attemptId, worktree.reused || !implementationNeeded), worktree.path, config.timeouts.codexMinutes * 60_000);
-        implementationNeeded = false;
-        transition(state, issue.number, developerPhase, { processStatus: "SUCCEEDED", fixerStatus: developerPhase === "FIXING" ? "SUCCEEDED" : undefined, findingDispositions: developerPhase === "FIXING" ? Object.fromEntries((state.stories[String(issue.number)].reviewFindings || []).map((finding) => [finding, "FIXED" as const])) : undefined });
-      } catch (error) {
-        const kind = error instanceof CodexRunError ? error.kind : "FAILED";
-        const status = kind === "AUTH" ? "PAUSED_AUTH" : kind === "QUOTA" ? "PAUSED_QUOTA" : "FAILED_INFRA";
-        transition(state, issue.number, status, { processStatus: kind === "AUTH" || kind === "QUOTA" ? "BLOCKED" : "FAILED", fixerStatus: cycle === 0 ? undefined : "FAILED", reason: error instanceof Error ? error.message : String(error) });
-        await saveState(stateFile, state);
-        await mark(client, issue, "agent:blocked");
-        await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], state.stories[String(issue.number)].reason || "Codex failed"));
-        return { status, state: state.stories[String(issue.number)] };
+        try {
+          emitOperationalEvent({ source: "developer", phase: developerPhase, message: `Developer agent started for issue #${issue.number}: ${pullRequest ? "fixing the current validation/review findings" : "initial implementation"}, review cycle ${cycle}, validation attempt ${validationAttempts + 1}/${config.maxValidationAttempts}${instructions.length ? `, ${instructions.length} human instruction(s)` : ""}` });
+          transition(state, issue.number, developerPhase, { processStatus: "RUNNING", fixerStatus: pullRequest ? "RUNNING" : undefined, reason: feedback || undefined });
+          await saveState(stateFile, state);
+          await codex.developer(storyPrompt(issue, contract, feedback, instructions, attemptId, worktree.reused || Boolean(pullRequest)), worktree.path, config.timeouts.codexMinutes * 60_000);
+          developerNeeded = false;
+          transition(state, issue.number, developerPhase, { processStatus: "SUCCEEDED", fixerStatus: pullRequest ? "SUCCEEDED" : undefined, findingDispositions: pullRequest ? Object.fromEntries((state.stories[String(issue.number)].reviewFindings || []).map((finding) => [finding, "FIXED" as const])) : undefined });
+        } catch (error) {
+          const kind = error instanceof CodexRunError ? error.kind : "FAILED";
+          const status = kind === "AUTH" ? "PAUSED_AUTH" : kind === "QUOTA" ? "PAUSED_QUOTA" : "FAILED_INFRA";
+          transition(state, issue.number, status, { processStatus: kind === "AUTH" || kind === "QUOTA" ? "BLOCKED" : "FAILED", fixerStatus: pullRequest ? "FAILED" : undefined, reason: error instanceof Error ? error.message : String(error) });
+          await saveState(stateFile, state);
+          await mark(client, issue, "agent:blocked");
+          await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], state.stories[String(issue.number)].reason || "Codex failed"));
+          return { status, state: state.stories[String(issue.number)] };
+        }
       }
       let checkpoint: Awaited<ReturnType<typeof commitLocal>>;
       try {
@@ -134,6 +140,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         // therefore do not consume the developer/reviewer fix-cycle budget.
         transition(state, issue.number, "FIXING", { fixCycles: cycle, reason: feedback, validation: validationEvidence, validationAttempts, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
         await saveState(stateFile, state);
+        developerNeeded = true;
         if (validationAttempts >= config.maxValidationAttempts) {
           const reason = `local validation attempts (${config.maxValidationAttempts}) exhausted; last failure: ${validationText.slice(0, 2_000)}`;
           transition(state, issue.number, "NEEDS_HUMAN", { reason, validationAttempts, processStatus: "BLOCKED" });
@@ -187,6 +194,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         feedback = config.requiredChecks.length ? `Required CI checks failed or timed out for SHA ${commit.sha}.` : "No required checks configured; configure at least one required check before merge.";
         transition(state, issue.number, "FIXING", { fixCycles: nextFixCycle(cycle, "CI_FAILURE"), reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
         await saveState(stateFile, state);
+        developerNeeded = true;
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
         cycle = nextFixCycle(cycle, "CI_FAILURE");
@@ -235,6 +243,7 @@ async function processStory(client: GitHubClient, config: OrchestrationConfig, t
         await saveState(stateFile, state);
         transition(state, issue.number, "FIXING", { fixCycles: nextFixCycle(cycle, "REVIEW_CHANGES_REQUESTED"), reason: feedback, reviewHeadSha: undefined, reviewSha: undefined, reviewerStatus: undefined });
         await saveState(stateFile, state);
+        developerNeeded = true;
         if (!canStartFix({ ...state.stories[String(issue.number)], fixCycles: cycle }, config.maxFixCycles)) break;
         await client.comment(issue.number, formatFailure(state.stories[String(issue.number)], feedback));
         cycle = nextFixCycle(cycle, "REVIEW_CHANGES_REQUESTED");

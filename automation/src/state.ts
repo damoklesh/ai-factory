@@ -50,6 +50,17 @@ export function canStartFix(state: StoryState, maxFixCycles: number): boolean {
   return state.fixCycles < maxFixCycles;
 }
 
+/**
+ * A resumed pull request should go back through validation and review unless
+ * the persisted state explicitly says that developer work is required. This
+ * keeps a restart from spending another fix cycle on a PR that was already
+ * published and is merely waiting for review/checks.
+ */
+export function shouldRunDeveloper(pullRequestExists: boolean, previousStatus?: StoryStatus): boolean {
+  if (!pullRequestExists) return true;
+  return previousStatus === "FIXING" || previousStatus === "REVIEW_CHANGES_REQUESTED";
+}
+
 export type FixCycleCause = "LOCAL_VALIDATION" | "CI_FAILURE" | "REVIEW_CHANGES_REQUESTED";
 
 /** Local implementation retries do not consume the review correction budget; the orchestrator bounds them separately. */

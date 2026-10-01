@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseStory, selectNextStory, storyEligibility, validateDependencyGraph } from "../src/stories.js";
-import { emptyState, canStartFix, nextFixCycle, reconcilePullRequest, transition } from "../src/state.js";
+import { emptyState, canStartFix, nextFixCycle, reconcilePullRequest, shouldRunDeveloper, transition } from "../src/state.js";
 import { parseReviewResult, validateDeveloperResult } from "../src/result.js";
 import { evaluateRequiredChecks } from "../src/checks.js";
 import { buildPullRequestBody, replaceAgentLabel } from "../src/github.js";
@@ -71,6 +71,14 @@ test("keeps the correction boundary explicit across a restart", () => {
   assert.equal(restarted.fixCycles, 3);
   assert.equal(canStartFix(restarted, 3), false);
   assert.equal(canStartFix(restarted, 4), true);
+});
+
+test("resumes an existing PR at review without another developer cycle", () => {
+  assert.equal(shouldRunDeveloper(false), true);
+  assert.equal(shouldRunDeveloper(true, "PR_OPEN"), false);
+  assert.equal(shouldRunDeveloper(true, "FAILED_INFRA"), false);
+  assert.equal(shouldRunDeveloper(true, "REVIEW_CHANGES_REQUESTED"), true);
+  assert.equal(shouldRunDeveloper(true, "FIXING"), true);
 });
 
 test("rejects malformed agent results", () => {
