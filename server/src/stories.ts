@@ -126,6 +126,7 @@ export function parseMarkdown(fileName: string, markdown: string): StoryDetail {
     diagnostics,
     valid: !firstError,
     dependencyError: firstError?.message,
+    labels: parseLabels(parsed.values.labels),
   };
 }
 
@@ -206,6 +207,8 @@ function parseDependencies(value: string | undefined, file: string, line: number
   for (const dependency of result) if (!/^US-\d{3,}$/.test(dependency)) diagnostics.push(diagnostic(file, line, "INVALID_DEPENDENCY_ID", `Dependency '${dependency}' must match US-###.`));
   return [...new Set(result)];
 }
+
+function parseLabels(value?: string): string[] { return [...new Set((value || "").split(",").map((item) => item.trim()).filter(Boolean))]; }
 
 function listItems(value: string): string[] { return value.split("\n").map((line) => line.replace(/^\s*-\s*(?:\[[ xX]\]\s*)?/, "").trim()).filter(Boolean); }
 function firstHeading(markdown: string): string | undefined { return markdown.match(/^#\s+(.+)$/m)?.[1]?.trim(); }

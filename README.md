@@ -95,7 +95,7 @@ For a real pilot:
 - GitHub Actions enabled and repository workflow permissions configured.
 - Two small disposable Issues using the story template.
 
-The controller does not register runners, change branch rules, or configure GitHub on your behalf. The explicit `sync-backlog` command can create target-repository Issues from Markdown stories; normal orchestration never creates duplicate Issues automatically.
+The controller does not register runners, change branch rules, or configure GitHub on your behalf. In the Backlog tab, **Preview Issue changes** classifies each story as create, update, unchanged, or conflict. A separate confirmation performs only the listed writes. Stable `<!-- ai-factory:story-id=US-### -->` markers and a secret-free per-project sync baseline make repeated publication idempotent. Remote edits become conflicts and are not overwritten unless the user explicitly chooses the local version. **Refresh GitHub state** is a separate read operation for Issue, PR, check, and merge facts.
 
 ## Configuration
 

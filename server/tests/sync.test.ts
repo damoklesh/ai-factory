@@ -31,6 +31,13 @@ test("degrades without GitHub and keeps the last facts stale", async () => {
   assert.equal((await controller.project()).github.stale, true);
 });
 
+test("keeps last known GitHub facts and marks them stale after a refresh failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-factory-stale-sync-")); const backlog = join(root, "backlog"); await mkdir(backlog); await writeFile(join(backlog, "US-001.md"), storyDocument("US-001", "First"), "utf8");
+  let fail = false; const checkedAt = new Date().toISOString(); const adapter = { async observe() { if (fail) throw new Error("GitHub API 429 rate limited"); return [{ storyId: "US-001", githubIssueNumber: 10, state: "OPEN" as const, checks: "PASS" as const, checkedAt }]; } };
+  const controller = new LocalController(new AgentPersistence(join(root, ".agent")), { backlogRoot: backlog, githubAdapter: adapter }); await controller.sync(); fail = true; const failed = await controller.sync();
+  assert.equal(failed.stale, true); const story = (await controller.story("US-001"))!; assert.equal(story.githubIssueNumber, 10); assert.equal(story.externalStatus, "OPEN"); assert.equal(story.externalStale, true);
+});
+
 test("projects the CLI orchestrator state into stories and executions", async () => {
   const root = await mkdtemp(join(tmpdir(), "ai-factory-external-state-")); const backlog = join(root, "backlog"); await mkdir(backlog);
   await writeFile(join(backlog, "US-001-landing.md"), storyDocument("US-001", "Landing", "githubIssueNumber: 1\n"), "utf8");

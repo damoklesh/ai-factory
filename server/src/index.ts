@@ -12,13 +12,13 @@ const repositoryRoot = resolve(fileURLToPath(new URL("../../../", import.meta.ur
 const uiDirectory = resolve(process.env.AI_FACTORY_UI_DIRECTORY || repositoryRoot, process.env.AI_FACTORY_UI_DIRECTORY ? "" : "ui/dist");
 const config = loadAppConfig();
 const token = githubToken();
-const githubAdapter = token && config.owner !== "OWNER" && config.repo !== "REPO" ? new GitHubSyncAdapter(config.owner, config.repo, token) : undefined;
 const orchestratorStatePath = resolve(repositoryRoot, "automation", config.stateFile || ".cache/state.json");
 const projectStore = new ProjectWorkspaceStore(repositoryRoot, join(repositoryRoot, ".agent", "projects"), config.targetBacklogPath || "backlog");
-const controller = new LocalController(new AgentPersistence(join(repositoryRoot, ".agent", "projects", "unselected")), { githubAdapter, projectStore, orchestratorStatePath });
+const githubAdapterFactory = token ? (project: import("@ai-factory/contracts").TargetProject) => project.github ? new GitHubSyncAdapter(project.github.owner, project.github.repo, token) : undefined : undefined;
+const controller = new LocalController(new AgentPersistence(join(repositoryRoot, ".agent", "projects", "unselected")), { githubAdapterFactory, projectStore, orchestratorStatePath });
 const app = createAppServer({ port, uiDirectory, controller });
 app.server.listen(port, "127.0.0.1", () => {
   console.log(`AI Factory UI listening at http://127.0.0.1:${port}`);
-  if (githubAdapter) void app.controller.sync();
+  if (token) void app.controller.sync().catch(() => undefined);
 });
-if (githubAdapter) { const timer = setInterval(() => void app.controller.sync(), 15_000); timer.unref(); }
+if (token) { const timer = setInterval(() => void app.controller.sync().catch(() => undefined), 15_000); timer.unref(); }

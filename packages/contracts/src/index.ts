@@ -40,6 +40,7 @@ export interface StorySummary {
   sourceFile?: string;
   valid?: boolean;
   diagnostics?: StoryDiagnostic[];
+  labels?: string[];
 }
 
 export interface StoryDetail extends StorySummary {
@@ -61,6 +62,11 @@ export interface StoryDetail extends StorySummary {
 export interface GithubObservation { storyId: string; githubIssueNumber?: number; pullRequestNumber?: number; headSha?: string; validatedHeadSha?: string; state: "OPEN" | "CLOSED" | "MERGED"; checks: "PASS" | "FAIL" | "PENDING" | "UNKNOWN"; checkedAt: string; }
 export interface SyncResult { connected: boolean; stale: boolean; syncedAt?: string; message: string; changedStoryIds: string[]; }
 export interface BacklogValidation { valid: boolean; diagnostics: StoryDiagnostic[]; template: string; }
+export type BacklogSyncActionKind = "CREATE" | "UPDATE" | "UNCHANGED" | "CONFLICT";
+export interface BacklogSyncAction { storyId: string; kind: BacklogSyncActionKind; issueNumber?: number; localRevision: string; remoteRevision?: string; reason?: string; }
+export interface BacklogSyncPreview { previewId: string; generatedAt: string; actions: BacklogSyncAction[]; }
+export interface BacklogSyncRequest { previewId: string; resolutions: Array<{ storyId: string; decision: "USE_LOCAL" | "KEEP_REMOTE" }>; }
+export interface BacklogSyncPublishResult { previewId: string; created: Array<{ storyId: string; issueNumber: number }>; updated: Array<{ storyId: string; issueNumber: number }>; unchanged: Array<{ storyId: string; issueNumber: number }>; conflicts: BacklogSyncAction[]; failures: Array<{ storyId: string; message: string }>; }
 
 export interface ProjectSnapshot {
   schemaVersion: number;
@@ -206,6 +212,15 @@ export function parseSelectProjectRequest(value: unknown): SelectProjectRequest 
 export function parseInitProjectRequest(value: unknown): InitProjectRequest {
   if (!isRecord(value) || typeof value.targetPath !== "string" || !value.targetPath.trim() || typeof value.confirmationPath !== "string" || !value.confirmationPath.trim()) throw new ContractValidationError("project", "targetPath and the exact confirmationPath are required");
   return { targetPath: value.targetPath.trim(), confirmationPath: value.confirmationPath.trim() };
+}
+
+export function parseBacklogSyncRequest(value: unknown): BacklogSyncRequest {
+  if (!isRecord(value) || typeof value.previewId !== "string" || !value.previewId || !Array.isArray(value.resolutions)) throw new ContractValidationError("sync", "previewId and resolutions are required");
+  const resolutions = value.resolutions.map((item) => {
+    if (!isRecord(item) || typeof item.storyId !== "string" || !item.storyId || !["USE_LOCAL", "KEEP_REMOTE"].includes(String(item.decision))) throw new ContractValidationError("sync.resolutions", "each resolution requires storyId and USE_LOCAL or KEEP_REMOTE");
+    return { storyId: item.storyId, decision: item.decision as "USE_LOCAL" | "KEEP_REMOTE" };
+  });
+  return { previewId: value.previewId, resolutions };
 }
 
 export function parseDecisionRequest(value: unknown): DecisionRequest {

@@ -1,19 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import type { ApprovalRequest, AppConfigView, BacklogValidation, ConfigUpdateRequest, DecisionRequest, DecisionResult, Diagnostic, GithubObservation, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RecentProject, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StoryDiagnostic, StorySummary, SyncResult, TargetProject } from "@ai-factory/contracts";
+import type { ApprovalRequest, AppConfigView, BacklogSyncPreview, BacklogSyncPublishResult, BacklogSyncRequest, BacklogValidation, ConfigUpdateRequest, DecisionRequest, DecisionResult, Diagnostic, GithubObservation, InstructionRequest, InstructionResult, LogEntry, LogPage, ProjectSnapshot, RecentProject, RunSnapshot, SpecUpdateRequest, StartRunRequest, StoryDetail, StoryDiagnostic, StorySummary, SyncResult, TargetProject } from "@ai-factory/contracts";
 import { SCHEMA_VERSION } from "@ai-factory/contracts";
-import { AgentPersistence } from "./persistence.js";
+import { AgentPersistence, sanitizeText } from "./persistence.js";
 import { BACKLOG_STORY_TEMPLATE, loadBacklog } from "./stories.js";
 import { loadAppConfig, configFilePath } from "./config.js";
 import { ProjectWorkspaceStore } from "./projects.js";
+import { desiredIssue, issueRevision, previewBacklogSync, type IssueMirror, type SyncBaseline } from "./backlog-sync.js";
 
 type Listener = (event: LogEntry) => void;
-export interface GithubSyncAdapter { observe(stories: StoryDetail[]): Promise<GithubObservation[]>; }
+export interface GithubSyncAdapter { observe(stories: StoryDetail[]): Promise<GithubObservation[]>; listIssues?(): Promise<IssueMirror[]>; createIssue?(input: { title: string; body: string; labels: string[] }): Promise<IssueMirror>; updateIssue?(number: number, input: { title: string; body: string; labels: string[] }): Promise<IssueMirror>; }
 
 interface OrchestratorStoryState { issueNumber: number; branch: string; status: string; fixCycles?: number; pullRequestNumber?: number; headSha?: string; reason?: string; updatedAt: string; }
 interface OrchestratorState { stories?: Record<string, OrchestratorStoryState>; }
-interface ControllerOptions { codexAvailable?: boolean; githubConnected?: boolean; githubObservations?: GithubObservation[]; githubAdapter?: GithubSyncAdapter; backlogRoot?: string; orchestratorStatePath?: string; approvals?: ApprovalRequest[]; configPath?: string; projectStore?: ProjectWorkspaceStore; }
+interface ControllerOptions { codexAvailable?: boolean; githubConnected?: boolean; githubObservations?: GithubObservation[]; githubAdapter?: GithubSyncAdapter; githubAdapterFactory?: (project: TargetProject) => GithubSyncAdapter | undefined; backlogRoot?: string; orchestratorStatePath?: string; approvals?: ApprovalRequest[]; configPath?: string; projectStore?: ProjectWorkspaceStore; }
 
 export class LocalController {
   private readonly listeners = new Set<Listener>();
@@ -33,8 +34,10 @@ export class LocalController {
   private githubConnected = false;
   private activeProject?: TargetProject;
   private projectContextLoaded = false;
+  private githubAdapter?: GithubSyncAdapter;
+  private readonly syncPreviews = new Map<string, BacklogSyncPreview>();
   private readonly configUpdates = new Map<string, { revision: string; config: AppConfigView; diff: string }>();
-  constructor(private persistence = new AgentPersistence(), private readonly options: ControllerOptions = {}) { this.config = loadAppConfig(options.configPath); this.githubConnected = options.githubConnected === true || Boolean(options.githubAdapter); this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
+  constructor(private persistence = new AgentPersistence(), private readonly options: ControllerOptions = {}) { this.config = loadAppConfig(options.configPath); this.githubAdapter = options.githubAdapter; this.githubConnected = options.githubConnected === true || Boolean(options.githubAdapter); this.approvalItems = options.approvals ? options.approvals.map((item) => ({ ...item })) : []; }
 
   async project(): Promise<ProjectSnapshot> {
     await this.ensureProjectContext();
@@ -57,6 +60,25 @@ export class LocalController {
   async selectProject(targetPath: string): Promise<TargetProject> { if (!this.options.projectStore) throw new Error("PROJECT_SELECTION_UNAVAILABLE"); this.assertProjectSwitchAllowed(); const project = await this.options.projectStore.select(targetPath); this.applyProject(project); return project; }
   async initializeProject(targetPath: string, confirmationPath: string): Promise<TargetProject> { if (!this.options.projectStore) throw new Error("PROJECT_SELECTION_UNAVAILABLE"); this.assertProjectSwitchAllowed(); const project = await this.options.projectStore.initialize(targetPath, confirmationPath); this.applyProject(project); return project; }
   async recentProjects(): Promise<RecentProject[]> { return this.options.projectStore ? this.options.projectStore.recent() : []; }
+  async previewBacklogSync(): Promise<BacklogSyncPreview> { await this.ensureStories(); if (this.options.projectStore && !this.activeProject) throw new Error("PROJECT_NOT_SELECTED"); this.assertValidBacklog(); const adapter = this.publishAdapter(); const preview = previewBacklogSync(this.stories, await adapter.listIssues!(), await this.persistence.readMetadata<SyncBaseline>("backlog-sync.json", { stories: {} })); this.syncPreviews.set(preview.previewId, preview); while (this.syncPreviews.size > 10) this.syncPreviews.delete(this.syncPreviews.keys().next().value!); this.applySyncActions(preview); return preview; }
+  async publishBacklog(request: BacklogSyncRequest): Promise<BacklogSyncPublishResult> {
+    await this.ensureStories(); this.assertValidBacklog(); const original = this.syncPreviews.get(request.previewId); if (!original) throw new Error("SYNC_PREVIEW_NOT_FOUND"); const adapter = this.publishAdapter(); const baseline = await this.persistence.readMetadata<SyncBaseline>("backlog-sync.json", { stories: {} }); const issues = await adapter.listIssues!(); const fresh = previewBacklogSync(this.stories, issues, baseline); if (!samePreview(original, fresh)) throw new Error("SYNC_PREVIEW_STALE");
+    const result: BacklogSyncPublishResult = { previewId: request.previewId, created: [], updated: [], unchanged: [], conflicts: [], failures: [] }; const resolutions = new Map(request.resolutions.map((item) => [item.storyId, item.decision]));
+    for (const action of original.actions) {
+      const story = this.stories.find((item) => item.storyId === action.storyId)!; const resolution = resolutions.get(action.storyId);
+      if (action.kind === "CONFLICT" && resolution !== "USE_LOCAL") { result.conflicts.push(action); continue; }
+      try {
+        let issue: IssueMirror;
+        const desired = desiredIssue(story, action.issueNumber);
+        if (action.kind === "CREATE") { issue = await adapter.createIssue!({ title: desired.title, body: desired.body, labels: desired.labels }); result.created.push({ storyId: story.storyId, issueNumber: issue.number }); }
+        else if (action.kind === "UNCHANGED") { issue = issues.find((item) => item.number === action.issueNumber)!; result.unchanged.push({ storyId: story.storyId, issueNumber: issue.number }); }
+        else { issue = await adapter.updateIssue!(action.issueNumber!, { title: desired.title, body: desired.body, labels: desired.labels }); result.updated.push({ storyId: story.storyId, issueNumber: issue.number }); }
+        baseline.stories[story.storyId] = { issueNumber: issue.number, localRevision: story.specRevision, remoteRevision: issueRevision(issue) };
+        this.stories = this.stories.map((item) => item.storyId === story.storyId ? { ...item, githubIssueNumber: issue.number, syncStatus: "IN_SYNC" } : item);
+      } catch (error) { result.failures.push({ storyId: story.storyId, message: sanitizeText(error instanceof Error ? error.message : String(error)) }); }
+    }
+    await this.persistence.writeMetadata("backlog-sync.json", baseline); this.syncPreviews.delete(request.previewId); return result;
+  }
   async listStories(query?: { search?: string; status?: string }): Promise<StorySummary[]> {
     await this.ensureStories();
     await this.refreshOrchestratorState();
@@ -113,9 +135,9 @@ export class LocalController {
     if (this.options.projectStore && !this.activeProject) throw new Error("PROJECT_NOT_SELECTED");
     await this.ensureStories();
     this.assertValidBacklog();
-    if (!this.options.githubAdapter && this.options.githubConnected !== true) { this.githubConnected = false; this.syncStale = true; return { connected: false, stale: true, message: "GitHub unavailable; remote facts were not changed", changedStoryIds: [] }; }
+    if (!this.githubAdapter && this.options.githubConnected !== true) { this.githubConnected = false; this.syncStale = true; return { connected: false, stale: true, message: "GitHub unavailable; remote facts were not changed", changedStoryIds: [] }; }
     let observations: GithubObservation[];
-    try { observations = this.options.githubAdapter ? await this.options.githubAdapter.observe(this.stories) : this.options.githubObservations || []; this.githubConnected = true; } catch (error) { this.githubConnected = false; this.syncStale = true; return { connected: false, stale: true, message: error instanceof Error ? error.message : "GitHub unavailable; remote facts were not changed", changedStoryIds: [] }; }
+    try { observations = this.githubAdapter ? await this.githubAdapter.observe(this.stories) : this.options.githubObservations || []; this.githubConnected = true; } catch (error) { this.githubConnected = false; this.syncStale = true; this.stories = this.stories.map((story) => story.externalStatus ? { ...story, externalStale: true } : story); return { connected: false, stale: true, message: sanitizeText(error instanceof Error ? error.message : "GitHub unavailable; remote facts were not changed"), changedStoryIds: [] }; }
     const changedStoryIds: string[] = [];
     this.stories = this.stories.map((story) => {
       const observation = observations.find((item) => item.storyId === story.storyId); if (!observation) return story;
@@ -159,8 +181,10 @@ export class LocalController {
   private async ensureStories(): Promise<void> { await this.ensureProjectContext(); if (this.storiesLoaded) return; if (this.options.projectStore && !this.activeProject) { this.stories = []; this.storyDiagnostics = []; this.storiesLoaded = true; return; } const backlog = await loadBacklog(this.activeProject?.backlogPath || this.options.backlogRoot); this.stories = backlog.stories; this.storyDiagnostics = backlog.diagnostics; this.storiesLoaded = true; }
   private assertValidBacklog(): void { const first = this.storyDiagnostics.find((item) => item.severity === "ERROR"); if (first) throw new Error(`BACKLOG_INVALID: ${first.file}:${first.line} ${first.message}`); }
   private async ensureProjectContext(): Promise<void> { if (this.projectContextLoaded) return; this.projectContextLoaded = true; if (!this.options.projectStore) return; const project = await this.options.projectStore.active(); if (project) this.applyProject(project); }
-  private applyProject(project: TargetProject): void { this.projectContextLoaded = true; this.activeProject = project; this.stories = []; this.storyDiagnostics = []; this.storiesLoaded = false; this.runHistory = []; this.runsLoaded = false; this.activeRun = undefined; this.persistence = new AgentPersistence(this.options.projectStore!.projectDataRoot(project.projectId)); if (project.github) this.config = { ...this.config, owner: project.github.owner, repo: project.github.repo, targetRepository: `${project.github.owner}/${project.github.repo}` }; if (project.baseBranch) this.config = { ...this.config, baseBranch: project.baseBranch, targetBranch: project.baseBranch }; }
+  private applyProject(project: TargetProject): void { this.projectContextLoaded = true; this.activeProject = project; this.stories = []; this.storyDiagnostics = []; this.storiesLoaded = false; this.runHistory = []; this.runsLoaded = false; this.activeRun = undefined; this.persistence = new AgentPersistence(this.options.projectStore!.projectDataRoot(project.projectId)); this.githubAdapter = this.options.githubAdapterFactory ? this.options.githubAdapterFactory(project) : this.options.githubAdapter; this.githubConnected = this.options.githubConnected === true || Boolean(this.githubAdapter); if (project.github) this.config = { ...this.config, owner: project.github.owner, repo: project.github.repo, targetRepository: `${project.github.owner}/${project.github.repo}` }; if (project.baseBranch) this.config = { ...this.config, baseBranch: project.baseBranch, targetBranch: project.baseBranch }; }
   private assertProjectSwitchAllowed(): void { if (this.activeRun && ["ACTIVE", "PAUSE_REQUESTED", "STOP_REQUESTED"].includes(this.activeRun.status)) throw new Error("RUN_ALREADY_ACTIVE"); }
+  private publishAdapter(): Required<Pick<GithubSyncAdapter, "listIssues" | "createIssue" | "updateIssue">> { const adapter = this.githubAdapter; if (!adapter?.listIssues || !adapter.createIssue || !adapter.updateIssue) throw new Error("GITHUB_PUBLISH_UNAVAILABLE"); return adapter as Required<Pick<GithubSyncAdapter, "listIssues" | "createIssue" | "updateIssue">>; }
+  private applySyncActions(preview: BacklogSyncPreview): void { this.stories = this.stories.map((story) => { const action = preview.actions.find((item) => item.storyId === story.storyId); return action ? { ...story, githubIssueNumber: action.issueNumber || story.githubIssueNumber, syncStatus: action.kind === "CONFLICT" ? "CONFLICT" : action.kind === "UNCHANGED" ? "IN_SYNC" : "LOCAL_ONLY", conflict: action.kind === "CONFLICT" ? { repositoryRevision: action.localRevision, githubRevision: action.remoteRevision || "unknown", summary: action.reason || "Local and GitHub content diverged." } : undefined } : story; }); }
   private async refreshOrchestratorState(): Promise<void> {
     if (!this.options.orchestratorStatePath) return;
     let parsed: OrchestratorState;
@@ -196,4 +220,5 @@ function statusFor(story: StoryDetail): "pending" | "active" | "blocked" | "done
 function phaseForAgentStatus(status?: string): RunSnapshot["phase"] { if (status === "FIXING") return "FIXING"; if (status === "REVIEWING") return "REVIEWING"; if (status === "PR_OPEN") return "CI"; if (status === "DONE") return "FINISHED"; if (status?.startsWith("PAUSED")) return "PAUSED"; return "IMPLEMENTING"; }
 function issueUrl(config: AppConfigView, issue?: number): string | undefined { return issue ? `https://github.com/${config.owner}/${config.repo}/issues/${issue}` : undefined; }
 function pullRequestUrl(config: AppConfigView, pullRequest?: number): string | undefined { return pullRequest ? `https://github.com/${config.owner}/${config.repo}/pull/${pullRequest}` : undefined; }
+function samePreview(left: BacklogSyncPreview, right: BacklogSyncPreview): boolean { const comparable = (preview: BacklogSyncPreview) => preview.actions.map((item) => ({ storyId: item.storyId, kind: item.kind, issueNumber: item.issueNumber, localRevision: item.localRevision, remoteRevision: item.remoteRevision })); return JSON.stringify(comparable(left)) === JSON.stringify(comparable(right)); }
 function unifiedDiff(before: string, after: string): string { const left = before.split(/\r?\n/); const right = after.split(/\r?\n/); const lines = [`--- current`, `+++ proposed`]; const size = Math.max(left.length, right.length); for (let index = 0; index < size; index += 1) { if (left[index] === right[index]) lines.push(`  ${left[index] || ""}`); else { if (left[index] !== undefined) lines.push(`- ${left[index]}`); if (right[index] !== undefined) lines.push(`+ ${right[index]}`); } } return lines.join("\n"); }

@@ -17,3 +17,18 @@ test("maps GitHub issues, pull requests and checks without exposing the token", 
   assert.equal(requests.every((request) => request.authorization === "Bearer secret-token"), true);
   assert.doesNotMatch(JSON.stringify(observations), /secret-token/);
 });
+
+test("creates and updates Issues with labels while keeping authorization out of results", async () => {
+  const calls: Array<{ method: string; body: string; authorization: string }> = [];
+  const adapter = new GitHubSyncAdapter("acme", "factory", "private-token", async (_input, init) => {
+    calls.push({ method: init?.method || "GET", body: String(init?.body || ""), authorization: String(new Headers(init?.headers).get("Authorization")) });
+    const input = JSON.parse(String(init?.body)) as { title: string; body: string; labels: string[] };
+    return new Response(JSON.stringify({ number: 4, state: "open", title: input.title, body: input.body, labels: input.labels.map((name) => ({ name })) }));
+  });
+  const created = await adapter.createIssue({ title: "[US-004] Test", body: "<!-- ai-factory:story-id=US-004 -->", labels: ["agent:ready"] });
+  const updated = await adapter.updateIssue(4, { title: created.title, body: `${created.body}\nupdated`, labels: created.labels });
+  assert.deepEqual(calls.map((item) => item.method), ["POST", "PATCH"]);
+  assert.equal(calls.every((item) => item.authorization === "Bearer private-token"), true);
+  assert.deepEqual(updated.labels, ["agent:ready"]);
+  assert.doesNotMatch(JSON.stringify([created, updated]), /private-token/);
+});

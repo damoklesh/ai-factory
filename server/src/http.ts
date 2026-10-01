@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
-import { parseConfigUpdateRequest, parseDecisionRequest, parseInitProjectRequest, parseInstructionRequest, parseSelectProjectRequest, parseSpecUpdateRequest, parseStartRunRequest, ContractValidationError } from "@ai-factory/contracts";
+import { parseBacklogSyncRequest, parseConfigUpdateRequest, parseDecisionRequest, parseInitProjectRequest, parseInstructionRequest, parseSelectProjectRequest, parseSpecUpdateRequest, parseStartRunRequest, ContractValidationError } from "@ai-factory/contracts";
 import { LocalController } from "./controller.js";
 import { hasSession, mutationOriginAllowed, requestHostAllowed, writeSecurityHeaders, writeSessionCookie } from "./security.js";
 
@@ -42,6 +42,8 @@ export function createAppServer(options: { controller?: LocalController; uiDirec
       if (request.method === "POST" && path === "/api/runs") return json(response, 201, await controller.start(parseStartRunRequest(await body(request))));
       if (request.method === "POST" && path === "/api/projects/select") { const input = parseSelectProjectRequest(await body(request)); return json(response, 200, await controller.selectProject(input.targetPath)); }
       if (request.method === "POST" && path === "/api/projects/init") { const input = parseInitProjectRequest(await body(request)); return json(response, 200, await controller.initializeProject(input.targetPath, input.confirmationPath)); }
+      if (request.method === "POST" && path === "/api/backlog/sync/preview") return json(response, 200, await controller.previewBacklogSync());
+      if (request.method === "POST" && path === "/api/backlog/sync") return json(response, 200, await controller.publishBacklog(parseBacklogSyncRequest(await body(request))));
       const runAction = path.match(/^\/api\/runs\/([^/]+)\/(pause|stop|resume)$/);
       if (request.method === "POST" && runAction) return json(response, 200, await controller.control(decodeURIComponent(runAction[1]), runAction[2] as "pause" | "stop" | "resume"));
       if (request.method === "POST" && path.startsWith("/api/runs/") && path.endsWith("/instructions")) { const instruction = parseInstructionRequest(await body(request)); return json(response, 202, await controller.addInstruction(decodeURIComponent(path.split("/")[3]), instruction)); }

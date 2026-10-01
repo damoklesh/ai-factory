@@ -44,6 +44,15 @@ export class AgentPersistence {
   }
   async appendDecision(runId: string, decision: unknown): Promise<void> { await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "decisions.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(decision)}\n`, "utf8"); }); }
   async appendInstruction(runId: string, instruction: unknown): Promise<void> { await this.serialized(async () => { await this.ensure(); const path = join(this.root, "runs", runId, "instructions.jsonl"); await mkdir(dirname(path), { recursive: true }); await appendFile(path, `${JSON.stringify(instruction)}\n`, "utf8"); }); }
+  async writeMetadata(name: string, value: unknown): Promise<void> {
+    if (!/^[a-z0-9.-]+\.json$/i.test(name)) throw new PersistenceError("invalid metadata file name");
+    await this.serialized(async () => { await this.ensure(); const path = join(this.root, name); const temp = `${path}.${process.pid}.tmp`; await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8"); await rename(temp, path); });
+  }
+  async readMetadata<T>(name: string, fallback: T): Promise<T> {
+    if (!/^[a-z0-9.-]+\.json$/i.test(name)) throw new PersistenceError("invalid metadata file name");
+    try { return JSON.parse(await readFile(join(this.root, name), "utf8")) as T; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return fallback; throw new PersistenceError(`cannot read metadata ${name}`); }
+  }
   async readEvents(runId: string): Promise<LogEntry[]> {
     try {
       const content = await readFile(join(this.root, "runs", runId, "events.jsonl"), "utf8");
